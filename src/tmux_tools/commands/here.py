@@ -28,9 +28,9 @@ def here() -> None:
     or below it. With one match, tmux-here attaches to it. With several matches, it prints a
     numbered list and waits for a number.
 
-    With no match, tmux-here proposes session names and creates the session. A proposal
-    combines the project directory under ~/devel/projects with the checked out branch or the
-    repository directory. Outside a git repository it asks for a name without a proposal.
+    With no match, tmux-here proposes session names and creates the session. A proposal is the
+    repository the git remote points at, with the checked out branch after it. Outside a git
+    repository it asks for a name without a proposal.
 
     Inside tmux it switches the client instead of attaching.
     """
