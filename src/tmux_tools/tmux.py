@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -13,6 +14,12 @@ from .console import die
 from .entrypoint import exec_process
 
 _PANE_FORMAT = "#{session_name}\t#{pane_current_path}"
+_SESSION_FORMAT = "#{session_name}\t#{session_path}"
+
+# What a tmux command runs behind. Nothing for the tmux binary on this machine, ssh and its
+# options for a tmux on another one.
+Prefix = tuple[str, ...]
+LOCAL: Prefix = ()
 
 
 @dataclass(frozen=True)
@@ -23,10 +30,32 @@ class Pane:
     path: str
 
 
-def _run(args: list[str], *, capture: bool = True, quiet: bool = False) -> subprocess.CompletedProcess[str]:
+@dataclass(frozen=True)
+class Session:
+    """One line of ``tmux list-sessions``: a session and the directory it was started in."""
+
+    name: str
+    path: str
+
+
+def command(args: list[str], prefix: Prefix = LOCAL) -> list[str]:
+    """The argv that runs ``tmux args``, on this machine or behind ``prefix``.
+
+    ssh takes everything after the host name, joins it with spaces and hands the result to a
+    login shell on the other side. Arguments that mean something to a shell, such as the tab
+    inside a format string, arrive as two words unless they are quoted for it first.
+    """
+    if not prefix:
+        return ["tmux", *args]
+    return [*prefix, shlex.join(["tmux", *args])]
+
+
+def _run(
+    args: list[str], *, prefix: Prefix = LOCAL, capture: bool = True, quiet: bool = False
+) -> subprocess.CompletedProcess[str]:
     """Run tmux. ``capture`` keeps stdout, ``quiet`` drops stderr the way ``2> /dev/null`` does."""
     return subprocess.run(
-        ["tmux", *args],
+        command(args, prefix),
         stdout=subprocess.PIPE if capture else None,
         stderr=subprocess.DEVNULL if quiet else None,
         text=True,
@@ -68,13 +97,51 @@ def session_exists(name: str) -> bool:
     return _run(["has-session", f"-t={name}"], quiet=True).returncode == 0
 
 
-def list_panes() -> list[Pane]:
+def list_panes(prefix: Prefix = LOCAL) -> list[Pane]:
     """Every pane of every session, in the order tmux reports them."""
     panes: list[Pane] = []
-    for raw in _run(["list-panes", "-a", "-F", _PANE_FORMAT]).stdout.splitlines():
-        session, _, path = raw.partition("\t")
-        panes.append(Pane(session=session, path=path))
+    for raw in _run(["list-panes", "-a", "-F", _PANE_FORMAT], prefix=prefix).stdout.splitlines():
+        fields = _fields(raw)
+        if fields is not None:
+            panes.append(Pane(*fields))
     return panes
+
+
+def list_sessions_command(prefix: Prefix = LOCAL) -> list[str]:
+    """The argv of a session listing, for a caller that has to watch the output as it arrives."""
+    return command(["list-sessions", "-F", _SESSION_FORMAT], prefix)
+
+
+def list_sessions(prefix: Prefix = LOCAL) -> list[Session]:
+    """Every session, in the order tmux reports them, empty when no server is running.
+
+    No server is not a failure here. tmux says so on stderr and exits non-zero, and both are
+    dropped, because a machine with nothing running is a machine with no sessions to offer.
+    """
+    sessions: list[Session] = []
+    for raw in _run(["list-sessions", "-F", _SESSION_FORMAT], prefix=prefix, quiet=True).stdout.splitlines():
+        session = parse_session(raw)
+        if session is not None:
+            sessions.append(session)
+    return sessions
+
+
+def parse_session(raw: str) -> Session | None:
+    """One line of ``tmux list-sessions``, or ``None`` when the line is not one."""
+    fields = _fields(raw)
+    return Session(*fields) if fields is not None else None
+
+
+def _fields(raw: str) -> tuple[str, str] | None:
+    """Split a ``#{name}\t#{path}`` line, or ``None`` when the line does not have that shape.
+
+    A listing read over ssh arrives mixed with everything else the connection printed, so a
+    line counts only when the tab is there and something stands in front of it.
+    """
+    name, tab, path = raw.partition("\t")
+    if not tab or not name:
+        return None
+    return name, path
 
 
 def is_within(path: str, root: str) -> bool:

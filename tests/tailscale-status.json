@@ -1,0 +1,71 @@
+{
+  "Version": "1.90.0",
+  "BackendState": "Running",
+  "MagicDNSSuffix": "example-tailnet.ts.net",
+  "Self": {
+    "ID": "1",
+    "HostName": "hq",
+    "DNSName": "hq.example-tailnet.ts.net.",
+    "OS": "linux",
+    "Tags": null,
+    "Online": true
+  },
+  "Peer": {
+    "nodekey:0000000000000000000000000000000000000000000000000000000000000001": {
+      "ID": "2",
+      "HostName": "acme-laptop",
+      "DNSName": "laptop.example-tailnet.ts.net.",
+      "OS": "linux",
+      "Tags": null,
+      "Online": true
+    },
+    "nodekey:0000000000000000000000000000000000000000000000000000000000000002": {
+      "ID": "3",
+      "HostName": "workshop",
+      "DNSName": "workshop.example-tailnet.ts.net.",
+      "OS": "linux",
+      "Tags": null,
+      "Online": true
+    },
+    "nodekey:0000000000000000000000000000000000000000000000000000000000000003": {
+      "ID": "4",
+      "HostName": "attic",
+      "DNSName": "attic.example-tailnet.ts.net.",
+      "OS": "linux",
+      "Tags": null,
+      "Online": false
+    },
+    "nodekey:0000000000000000000000000000000000000000000000000000000000000004": {
+      "ID": "5",
+      "HostName": "Pixel 9a",
+      "DNSName": "pixel-9a.example-tailnet.ts.net.",
+      "OS": "android",
+      "Tags": null,
+      "Online": true
+    },
+    "nodekey:0000000000000000000000000000000000000000000000000000000000000005": {
+      "ID": "6",
+      "HostName": "slate",
+      "DNSName": "slate.example-tailnet.ts.net.",
+      "OS": "ios",
+      "Tags": null,
+      "Online": true
+    },
+    "nodekey:0000000000000000000000000000000000000000000000000000000000000006": {
+      "ID": "7",
+      "HostName": "runner",
+      "DNSName": "runner.example-tailnet.ts.net.",
+      "OS": "linux",
+      "Tags": ["tag:service"],
+      "Online": true
+    },
+    "nodekey:0000000000000000000000000000000000000000000000000000000000000007": {
+      "ID": "8",
+      "HostName": "cache",
+      "DNSName": "cache.example-tailnet.ts.net.",
+      "OS": "linux",
+      "Tags": ["tag:service"],
+      "Online": true
+    }
+  }
+}
