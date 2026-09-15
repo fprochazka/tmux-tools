@@ -16,10 +16,10 @@ from tmux_tools.tmux import Session, parse_session
 # the listing the same connection produced once they had.
 TRANSCRIPT = [
     "# Tailscale SSH requires an additional check.",
-    "# To authenticate, visit: https://login.tailscale.com/a/l80584f9391289",
+    "# To authenticate, visit: https://login.tailscale.com/a/1f2e3d4c5b6a",
     "# Authentication checked with Tailscale SSH.",
-    "work/releases\t/home/fp/devel/releases",
-    "personal/notes\t/home/fp/notes",
+    "work/releases\t/home/you/devel/releases",
+    "personal/notes\t/home/you/notes",
 ]
 
 HQ = Device(name="hq", host="hq", tagged=False, is_self=True)
@@ -32,8 +32,8 @@ def parse_all(lines: list[str]) -> list[Session]:
 
 def test_the_listing_survives_the_authentication_noise():
     assert parse_all(TRANSCRIPT) == [
-        Session("work/releases", "/home/fp/devel/releases"),
-        Session("personal/notes", "/home/fp/notes"),
+        Session("work/releases", "/home/you/devel/releases"),
+        Session("personal/notes", "/home/you/notes"),
     ]
 
 
@@ -49,7 +49,7 @@ def test_a_connection_that_only_complains_yields_nothing():
 
 def test_the_numbering_runs_across_devices():
     found = [
-        (HQ, [Session("personal/notes", "/home/fp/notes")]),
+        (HQ, [Session("personal/notes", "/home/you/notes")]),
         (LAPTOP, [Session("work/releases", "/srv/releases"), Session("work/db", "/srv/db")]),
     ]
     assert [pick.session.name for pick in flatten(found)] == ["personal/notes", "work/releases", "work/db"]
@@ -57,7 +57,7 @@ def test_the_numbering_runs_across_devices():
 
 def test_a_number_maps_back_to_its_device_and_its_session():
     found = [
-        (HQ, [Session("personal/notes", "/home/fp/notes")]),
+        (HQ, [Session("personal/notes", "/home/you/notes")]),
         (LAPTOP, [Session("work/releases", "/srv/releases"), Session("work/db", "/srv/db")]),
     ]
     assert flatten(found)[2] == Pick(LAPTOP, Session("work/db", "/srv/db"))
@@ -68,7 +68,7 @@ def test_nothing_anywhere_is_an_empty_list():
 
 
 def test_this_machine_is_read_through_tmux_and_never_handed_to_a_probe(monkeypatch: pytest.MonkeyPatch):
-    local = Session("personal/notes", "/home/fp/notes")
+    local = Session("personal/notes", "/home/you/notes")
     probed: list[Device] = []
 
     def record(devices: list[Device]) -> list[Probe]:

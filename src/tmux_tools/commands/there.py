@@ -239,9 +239,9 @@ def _choose(found: list[tuple[Device, list[Session]]], picks: list[Pick], curren
 def _attach(pick: Pick, current: str) -> None:
     """Hand the terminal over to the session, replacing this process on the way out.
 
-    The attach carries no ``-d``. The home machine keeps a client per session, some of them
-    attached for weeks, and detaching one from here would throw the desktop off whichever
-    session was reached from the road.
+    The attach carries no ``-d``. A machine you are away from may well have a client of its own
+    on the session, open for weeks, and reaching that session from the road is no reason to
+    throw the other client off it.
     """
     if pick.device.is_self:
         _attach_locally(pick.session.name, current)

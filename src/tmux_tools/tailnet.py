@@ -227,8 +227,8 @@ def _device(peer: dict[str, Any], *, is_self: bool) -> Device:
 def _ssh_host(peer: dict[str, Any]) -> str:
     """The name to hand ssh, taken from MagicDNS rather than from the host name.
 
-    The two are not the same. A machine whose host name is ``fprochazka-wolverine`` answers to
-    ``wolverine`` on the tailnet and to nothing else, so the host name is what a device is
+    The two are not the same. A machine whose host name is ``acme-workshop`` may answer to
+    ``workshop`` on the tailnet and to nothing else, so the host name is what a device is
     called and the MagicDNS name is what it is reached by. Tailscale SSH maps the identity, so
     there is no user to put in front of it.
     """
