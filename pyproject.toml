@@ -1,0 +1,64 @@
+[project]
+name = "tmux-tools"
+version = "0.1.0"
+description = "Command line helpers for working with tmux sessions"
+readme = "README.md"
+license = "MIT"
+authors = [
+    { name = "Filip Procházka", email = "mr@fprochazka.cz" }
+]
+requires-python = ">=3.11"
+keywords = ["tmux", "session", "attach", "git", "worktree", "cli"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development",
+]
+dependencies = [
+    "rich>=14.0.0",
+    "typer>=0.15.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/fprochazka/tmux-tools"
+Repository = "https://github.com/fprochazka/tmux-tools"
+
+[project.scripts]
+tmux-here = "tmux_tools.commands.here:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tmux_tools"]
+
+[tool.uv]
+package = true
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "C4", "SIM"]
+ignore = []
+
+[tool.ruff.lint.flake8-bugbear]
+# Typer declares options and arguments as call-valued parameter defaults; the returned
+# OptionInfo/ArgumentInfo is inert metadata, never a shared mutable, so B008 doesn't apply.
+extend-immutable-calls = ["typer.Option", "typer.Argument"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "ruff>=0.11.0",
+]
