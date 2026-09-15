@@ -9,7 +9,7 @@ import typer
 from rich.text import Text
 
 from .. import tmux
-from ..console import ask, die, error, line, warn
+from ..console import ask, error, line, warn
 from ..entrypoint import bootstrap
 from ..naming import propose_names
 from ..tmux import Pane
@@ -47,7 +47,7 @@ def here() -> None:
     if len(matches) == 1:
         _attach(matches[0].session, current)
     elif len(matches) > 1:
-        _attach(_pick_session(matches, physical, current), current)
+        _pick_session(matches, physical, current)
     else:
         _offer_new_session(physical)
 
@@ -75,7 +75,7 @@ def _attach(target: str, current: str) -> None:
         tmux.exec_attach(target)
 
 
-def _pick_session(matches: list[Pane], root: str, current: str) -> str:
+def _pick_session(matches: list[Pane], root: str, current: str) -> None:
     line()
     line(Text(f"Sessions in {root}:", style="bold"))
     line()
@@ -90,16 +90,24 @@ def _pick_session(matches: list[Pane], root: str, current: str) -> str:
         line(Text("      ").append(pane.path, style="dim"))
 
     line()
-    selection = ask("Enter number to attach (Ctrl+C to cancel): ")
 
-    if not _NUMBER.fullmatch(selection):
-        die(f"Invalid selection: {selection}")
+    while True:
+        answer = ask("Enter number to attach, or a new session name (Ctrl+C to cancel): ")
+        if not answer:
+            continue
 
-    index = int(selection) - 1
-    if index < 0 or index >= len(matches):
-        die(f"Selection out of range: {selection}")
+        if _NUMBER.fullmatch(answer):
+            index = int(answer) - 1
+            if index < 0 or index >= len(matches):
+                # Out of range only costs another turn around the loop; a typo is not fatal here
+                error(f"Selection out of range: {answer}")
+                continue
+            _attach(matches[index].session, current)
+            return
 
-    return matches[index].session
+        # A directory with three sessions in it is a directory that can want a fourth
+        if _create_session(answer, root):
+            return
 
 
 def _offer_new_session(root: str) -> None:
@@ -132,20 +140,27 @@ def _offer_new_session(root: str) -> None:
                 continue
             name = proposals[index]
 
-        if tmux.session_exists(name):
-            error(f"Session '{name}' already exists elsewhere. Pick another name.")
-            continue
-
-        _create_session(name, root)
-        return
+        if _create_session(name, root):
+            return
 
 
-def _create_session(name: str, path: str) -> None:
+def _create_session(name: str, path: str) -> bool:
+    """Start a session called ``name`` in ``path`` and go to it, and say whether it happened.
+
+    False means another session already holds the name, and the caller is expected to ask
+    again. Both prompts create a session through here, so neither can refuse a name the other
+    would have taken.
+    """
+    if tmux.session_exists(name):
+        error(f"Session '{name}' already exists elsewhere. Pick another name.")
+        return False
+
     if tmux.inside_tmux():
         tmux.new_session_detached(name, path)
         tmux.switch_client(name)
     else:
         tmux.exec_new_session(name, path)
+    return True
 
 
 def main() -> None:
