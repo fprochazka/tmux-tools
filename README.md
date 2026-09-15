@@ -6,113 +6,109 @@ Command line helpers for tmux, shipped as one Python package that installs sever
 
 Attach to the tmux session that already runs in the directory you are standing in.
 
-### Why
+**Why?** One session per project and per worktree adds up fast, and `tmux ls` lists session names rather than directories, so finding the one that belongs to the directory you just changed into means matching paths by eye.
 
-One session per project and per worktree adds up fast. `tmux ls` lists session names, not directories, so finding the session that belongs to the directory you just changed into means matching paths by eye. `tmux-here` does that match. When nothing matches, it proposes the name you would have typed anyway and creates the session.
+A session matches when any of its panes has a current path equal to the current directory or below it. With one match `tmux-here` attaches to it, and with several it asks:
 
-### What it does
+```
+$ cd ~/code/acme/shop
+$ tmux-here
 
-A session matches when any of its panes has a current path equal to the current directory or below it.
+Sessions in /home/you/code/acme/shop:
 
-- One match: attach to it.
-- Several matches: a numbered list, then a number to pick one. The session you are in is marked `[current]`.
-- No match: the proposed names, then a number or a name of your own, then the new session.
+   1) acme/shop [current]
+      /home/you/code/acme/shop
+   2) acme/shop/new-checkout
+      /home/you/code/acme/shop/.worktrees/new-checkout
 
-Inside tmux it switches the client instead of attaching, and creates a new session detached before switching to it, so you never end up with a tmux nested inside a tmux.
+Enter number to attach, or a new session name (Ctrl+C to cancel):
+```
 
-Outside tmux, `tmux-here` replaces itself with the `tmux` process rather than running it as a child. Nothing of it is left sitting between your shell and the session.
+With no match it proposes names instead:
 
-### Proposed names
+```
+$ cd ~/code/acme/shop
+$ git remote get-url origin
+git@gitlab.example.com:acme/shop.git
+$ git branch --show-current
+alice/new-checkout
+$ tmux-here
 
-A proposal is `<prefix>/<name>`.
+No tmux session runs in /home/you/code/acme/shop.
 
-The prefix is the first path segment below `~/devel/projects` when the current directory is under it, and `personal` when it is not. That directory is hardcoded; there is no setting for it.
+   1) acme/shop/new-checkout
+   2) acme/shop/alice/new-checkout
+   3) acme/shop
 
-The name comes from git, best guess first:
+Enter number or a new session name (Ctrl+C to cancel):
+```
 
-1. the checked out branch with its owner segment removed, so `fp/some-work` gives `some-work`
-2. the full branch
-3. the directory name of the repository
+Another repository:
 
-Inside a linked worktree the third proposal names the main repository rather than the worktree directory, so every worktree of a repository proposes the same fallback name. On a detached HEAD the two branch proposals are gone. Outside a git repository there are no proposals at all and the prompt asks for a plain name.
+```
+$ cd ~/code/scratchpad
+$ git remote
+$ tmux-here
 
-At the prompt a number picks a proposal, and anything else becomes the session name as typed. A name some other session already holds is refused, and the prompt comes back.
+No tmux session runs in /home/you/code/scratchpad.
 
-### Requirements
+   1) scratchpad
 
-- tmux on your PATH. `tmux-here` reports it as missing and stops.
-- git, only for the name proposals. Without it you get the prompt with no proposals.
+Enter number or a new session name (Ctrl+C to cancel):
+```
 
-A tmux server that is not running yet is not an error. It means no session matches, so the creation flow runs.
+Both prompts answer to the same two things. A number picks a line, anything else becomes the name of a new session started in the current directory, and a name some other session already holds is refused so that the prompt comes back. A directory with two sessions in it can want a third.
 
-### Exit codes
-
-`0` when a session was attached, switched to, or created, and when you were already in the session that matched. `1` when tmux is missing, when the selection is not a number or out of range, and on end of input at a prompt. `2` on a bad command line. Ctrl+C leaves with `130` and prints nothing.
+Inside tmux, `tmux-here` switches the client instead of attaching, and creates a new session detached before switching to it, so you never end up with a tmux nested inside a tmux. Outside tmux it replaces itself with the `tmux` process rather than running it as a child. It needs tmux on your PATH, and git only for the proposals.
 
 ## tmux-there
 
 Attach to a tmux session on any machine on your Tailscale tailnet.
 
-### Why
+**Why?** Long-lived sessions live on a machine you are not sitting at, and reaching one means ssh to the host, `tmux ls`, read the names, `tmux attach -t <name>`, and the same again after every drop.
 
-A dozen long-lived sessions sit on the machine at home and you are on a train with a laptop. Reaching one of them means ssh to the host, `tmux ls`, read the names, `tmux attach -t <name>`, and the same again after every drop. `tmux-there` is that sequence as one command and one number.
+```
+$ tmux-there
 
-It does nothing about the drops. Whatever carries the connection, ssh, mosh or Eternal Terminal, is a separate question; what this adds is that getting back takes one keystroke.
+workshop (local)
+   1) notes
+      /home/you/notes
 
-### What it does
+attic
+   2) acme/shop
+      /home/you/code/acme/shop
+   3) acme/shop/new-checkout
+      /home/you/code/acme/shop/.worktrees/new-checkout
 
-It reads the tailnet from `tailscale status --json` and scans every device that is online and is not a phone or a tablet. This machine is scanned too, through the tmux binary, with no ssh in the way.
+Enter number to attach (Ctrl+C to cancel):
+```
 
-The sessions are printed grouped by device and numbered in one sequence across all of them, so the answer is a single number. The session you are in is marked `[current]`.
+The numbering runs in one sequence across the devices, this machine first and the others by name, so the answer is a single number.
 
-This machine comes first and the other machines follow, by name, so that the list ends right above the prompt with the numbers you are most likely to type. A local session is what `tmux-here` is for.
+The devices come from `tailscale status --json`: every one that is online and is not a phone or a tablet. A device that answers with nothing is not listed at all, because no tmux installed, no tmux server running and a refused connection are the same answer. Without a tailnet to read, the listing is this machine alone.
 
-A remote pick hands the terminal to `ssh -t <host> tmux attach -t <name>` and replaces `tmux-there` with it, so nothing of it is left between your shell and a three hour session. A local pick behaves like `tmux-here`: switch the client inside tmux, attach outside it.
+A remote pick hands the terminal to `ssh -t <host> tmux attach -t <name>` and replaces `tmux-there` with it. The attach carries no `-d`, so a session another client already holds stays with it. A local pick behaves like `tmux-here`.
 
-The attach carries no `-d`. A session another client already holds stays with it, because the desktop at home keeps ten of them open and an attach from the road should not throw any of them off.
+Tailscale SSH asks for a browser login every so often, in the middle of a scan:
 
-Devices that answer with nothing are not listed at all. No tmux installed, no tmux server running and a refused connection are the same answer, and a tailnet with service nodes on it would otherwise say so on every run. A device `tailscale status` calls online can still be unreachable from where you are, so the scan keeps a wall clock of its own and gives up on the stragglers.
+```
+$ tmux-there
+attic: To authenticate, visit: https://login.tailscale.com/a/1f2e3d4c5b6a
+```
 
-Without a tailnet to read, the listing is this machine alone, named by its system host name. A laptop whose tailscaled is stopped, one that is logged out, and one that never had tailscale on it all still have sessions worth attaching to. Tailscale that is not installed is passed over in silence, because nothing is wrong. Tailscale that is installed and cannot answer gets one line saying so, and whatever tailscale itself printed, so you know why the other machines are missing.
+Visit it and the same connection carries on and produces its listing. The probe waiting on you keeps no deadline, because no connect timeout is long enough for a person walking to a browser, so Ctrl+C is the way out.
 
-### Configuration
+Reaching the other machines takes tailscale running and logged in, ssh on your PATH, Tailscale SSH set up for the tailnet, and tmux on the other side. None of it is asked for until a machine is about to be read.
 
-There is none to write. Without a config file every online device is scanned, which is how this is meant to be run.
-
-To narrow it, put a file at `$XDG_CONFIG_HOME/fprochazka-tmux-tools/config.toml`, or at `~/.config/fprochazka-tmux-tools/config.toml`:
+Without a config file every online device is scanned, which is how this is meant to be run. To narrow it, put a file at `$XDG_CONFIG_HOME/fprochazka-tmux-tools/config.toml`, or at `~/.config/fprochazka-tmux-tools/config.toml`:
 
 ```toml
 [devices]
-only = ["fprochazka-wolverine", "fprochazka-fatgrandpa"]
-# skip = ["searxng", "mcphub"]
+only = ["workshop", "attic"]
+# skip = ["cache", "runner"]
 ```
 
-`only` is the whole list of devices to scan. `skip` takes devices out of it. With both in the file, `only` is used and `skip` is ignored. The names are the host names `tailscale status` shows, matched exactly. A name that matches nothing gets a warning and the scan goes on. A file that cannot be parsed stops the command.
-
-### Tailscale SSH authentication
-
-Tailscale SSH asks for a browser login every so often. The connection stops there and the remote side prints a `https://login.tailscale.com/...` URL.
-
-Each probe is read as it runs, so that URL reaches you the moment it appears, labelled with the host it came from. Visit it, and the same connection carries on and produces its listing. Nothing is restarted, and the probe waiting on you keeps no deadline, because no connect timeout is long enough for a person walking to a browser. Ctrl+C is the way out.
-
-The check is per tailnet rather than per machine, so one device is probed on its own first and the rest follow a few seconds later. That is what keeps eight hosts from asking you the same question eight times.
-
-### Requirements
-
-tmux on your PATH is all it takes to list and attach to the sessions on this machine. Without it `tmux-there` reports it as missing and stops.
-
-The rest is what it takes to reach the other machines, and none of it is asked for until one is about to be read:
-
-- tailscale, running and logged in. The tailnet is where the device list comes from.
-- ssh on your PATH.
-- Tailscale SSH set up for the tailnet. Devices are reached by their MagicDNS name with no user name in front, and identity comes from Tailscale.
-- tmux on the other machines, or they have nothing to list.
-
-### Exit codes
-
-`0` when a session was attached or switched to, and when you picked the session you are already in. `1` when tmux is missing, when ssh is missing and another machine has to be read, when the config file cannot be parsed, when no machine has a session to attach to, when the selection is not a number or out of range, and on end of input at the prompt. `2` on a bad command line. Ctrl+C leaves with `130` and prints nothing.
-
-A tailnet that cannot be read is not an exit code. It costs you the other machines and nothing else.
+`only` is the whole list of devices to scan and `skip` takes devices out of it; with both in the file, `only` is used and `skip` is ignored. The names are the host names `tailscale status` shows, matched exactly.
 
 ## Installation
 
@@ -149,26 +145,6 @@ uv tool install --editable . --reinstall
 
 To remove it, run `uv tool uninstall tmux-tools`.
 
-## Project structure
-
-```
-src/tmux_tools/
-├── __init__.py       # package version
-├── entrypoint.py     # the bootstrap every command runs first, and the exec handover
-├── console.py        # the stdout and stderr consoles, and the prompt
-├── config.py         # the optional config file
-├── tmux.py           # the tmux binary, here or behind ssh, and matching panes against a directory
-├── tailnet.py        # the devices on the tailnet, and reading their sessions over ssh
-├── naming.py         # session names proposed from git and the project layout
-└── commands/
-    ├── here.py       # the `tmux-here` command
-    └── there.py      # the `tmux-there` command
-
-tests/                # unit tests for naming, pane matching, device selection, the picker and the config file
-```
-
-A new tool is a new module under `commands/` plus a line in `[project.scripts]`.
-
 ## Development
 
 ```bash
@@ -180,6 +156,22 @@ uv run ruff format .
 
 Run a command from the clone without installing it with `uv run tmux-here`.
 
-## License
+```
+src/tmux_tools/
+├── __init__.py       # package version
+├── entrypoint.py     # the bootstrap every command runs first, and the exec handover
+├── console.py        # the stdout and stderr consoles, and the prompt
+├── config.py         # the optional config file
+├── tmux.py           # the tmux binary, here or behind ssh, and matching panes against a directory
+├── tailnet.py        # the devices on the tailnet, and reading their sessions over ssh
+├── naming.py         # session names proposed from the git remote and the branch
+└── commands/
+    ├── here.py       # the `tmux-here` command
+    └── there.py      # the `tmux-there` command
 
-MIT
+tests/                # unit tests for naming, pane matching, device selection, the prompts and the config file
+```
+
+A new tool is a new module under `commands/` plus a line in `[project.scripts]`, and why a rule is the way it is lives in the docstrings.
+
+MIT licensed.
