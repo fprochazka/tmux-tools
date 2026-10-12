@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import socket
 import subprocess
@@ -22,6 +23,7 @@ _MOBILE = frozenset({"android", "ios"})
 
 # The host part of the URL Tailscale SSH prints when it wants a browser login.
 _LOGIN_URL = "login.tailscale.com"
+_URL = re.compile(r"https://\S+")
 
 
 @dataclass(frozen=True)
@@ -44,6 +46,10 @@ def require_ssh() -> None:
         die("ssh is not installed.")
 
 
+class TailnetUnavailable(Exception):
+    """tailscale is installed and the tailnet cannot be read from it. The message says why."""
+
+
 def status() -> dict[str, Any]:
     """The tailnet as ``tailscale status --json`` describes it, empty when there is none to read.
 
@@ -54,22 +60,39 @@ def status() -> dict[str, Any]:
     A machine without tailscale gets no warning. It is not on a tailnet, nothing about it is
     broken, and a line on every run would be noise. A tailscale that is installed and cannot
     answer does warn, because the user expected the other machines and is owed the reason they
-    are missing. stderr is left alone either way, so tailscale explains a logged out or stopped
-    daemon in its own words.
+    are missing.
+    """
+    try:
+        return read()
+    except TailnetUnavailable as problem:
+        warn(f"Cannot read the tailnet, listing this machine only. {problem}")
+        return {}
+
+
+def read() -> dict[str, Any]:
+    """The tailnet, empty without tailscale, and ``TailnetUnavailable`` when tailscale cannot answer.
+
+    stderr is left alone, so tailscale explains a logged out or stopped daemon in its own words
+    before the reason given here. A daemon that is stopped or logged out may still answer with
+    JSON, describing a tailnet it is not on; ``BackendState`` is what tells that answer apart.
     """
     if shutil.which("tailscale") is None:
         return {}
 
     result = subprocess.run(["tailscale", "status", "--json"], stdout=subprocess.PIPE, text=True, check=False)
     if result.returncode != 0:
-        warn("Cannot read the tailnet, listing this machine only. Check that tailscaled runs and is logged in.")
-        return {}
+        raise TailnetUnavailable("Check that tailscaled runs and is logged in.")
 
     try:
-        return json.loads(result.stdout)
+        parsed = json.loads(result.stdout)
     except ValueError:
-        warn("Cannot read the tailnet, listing this machine only. tailscale status did not answer with JSON.")
-        return {}
+        raise TailnetUnavailable("tailscale status did not answer with JSON.") from None
+
+    state = parsed.get("BackendState")
+    if state is not None and state != "Running":
+        raise TailnetUnavailable(f"tailscale is in state {state}, check that tailscaled runs and is logged in.")
+
+    return parsed
 
 
 def online_devices(tailnet: dict[str, Any]) -> list[Device]:
@@ -98,7 +121,7 @@ def online_devices(tailnet: dict[str, Any]) -> list[Device]:
     for peer in (tailnet.get("Peer") or {}).values():
         if peer.get("Online") is not True:
             continue
-        if str(peer.get("OS") or "").lower() in _MOBILE:
+        if is_mobile(peer):
             continue
         peers.append(_device(peer, is_self=False))
 
@@ -123,6 +146,57 @@ def unmatched_names(devices: list[Device], config: Config) -> list[str]:
     """Names in ``only`` that no device carries, usually a typo or a machine that has left."""
     present = {device.name for device in devices}
     return [name for name in config.only if name not in present]
+
+
+def find_device(devices: list[Device], name: str) -> Device | None:
+    """The device a typed name means: its host name first, its MagicDNS name second.
+
+    The host name is what every listing shows, so it wins when one device's host name is another
+    device's MagicDNS name. The MagicDNS name is what Tailscale keeps unique, which makes it the
+    way to tell apart two machines that share a host name.
+    """
+    for device in devices:
+        if device.name == name:
+            return device
+    for device in devices:
+        if device.host == name:
+            return device
+    return None
+
+
+def peer_named(tailnet: dict[str, Any], name: str) -> dict[str, Any] | None:
+    """The tailnet's own record of a device, online or not, under either of its names.
+
+    For explaining why a name is missing from ``online_devices``, and for nothing else.
+    """
+    records = [tailnet.get("Self") or {}, *(tailnet.get("Peer") or {}).values()]
+    for record in records:
+        if record and name in (str(record.get("HostName") or ""), _ssh_host(record)):
+            return record
+    return None
+
+
+def why_missing(tailnet: dict[str, Any], name: str) -> str | None:
+    """Why a device the tailnet knows is not among ``online_devices`` under this name, ``None`` when unknown.
+
+    The reason reads after ``"<name>: "``, so the listing and ``attach`` can say it the same way.
+    """
+    record = peer_named(tailnet, name)
+    if record is None:
+        return None
+
+    host_name = str(record.get("HostName") or "")
+    if host_name != name:
+        return f"that is its MagicDNS name, the config file has to use its host name '{host_name}'"
+    if record.get("Online") is not True:
+        return "Tailscale reports it offline"
+    if is_mobile(record):
+        return "it is a phone or a tablet, which has no ssh server to reach"
+    return "Tailscale does not list it as a device to scan"
+
+
+def is_mobile(peer: dict[str, Any]) -> bool:
+    return str(peer.get("OS") or "").lower() in _MOBILE
 
 
 def choose_canary(devices: list[Device]) -> Device | None:
@@ -161,6 +235,10 @@ class Probe:
         self.device = device
         self.sessions: list[tmux.Session] = []
         self.waiting_for_login = False
+        self.login_url = ""
+        # Everything the connection printed that was not a session, ssh's complaints among it
+        self.output: list[str] = []
+        self.returncode: int | None = None
         self._process = subprocess.Popen(
             tmux.list_sessions_command(_ssh(device.host)),
             stdout=subprocess.PIPE,
@@ -175,7 +253,16 @@ class Probe:
         """Read the connection to its end. Runs in a worker thread; results land on the probe."""
         for raw in self._process.stdout:
             self._consume(raw.rstrip("\n"))
-        self._process.wait()
+        self.returncode = self._process.wait()
+
+    @property
+    def unreachable(self) -> bool:
+        """True when ssh itself failed or the connection was killed, as opposed to tmux answering.
+
+        ssh exits 255 when it cannot connect or authenticate, which no tmux exit code collides
+        with. A negative code is a connection killed at the scan deadline.
+        """
+        return self.returncode is not None and (self.returncode == 255 or self.returncode < 0)
 
     def stop(self) -> None:
         """Kill the connection. Harmless on one that has already finished."""
@@ -184,12 +271,16 @@ class Probe:
     def _consume(self, text: str) -> None:
         if _LOGIN_URL in text:
             self.waiting_for_login = True
+            found = _URL.search(text)
+            self.login_url = found.group(0) if found else self.login_url
             warn(f"{self.device.name}: {text.lstrip('# ')}")
             return
 
         session = tmux.parse_session(text)
         if session is not None:
             self.sessions.append(session)
+        elif text.strip():
+            self.output.append(text)
 
 
 def _ssh(host: str) -> tmux.Prefix:

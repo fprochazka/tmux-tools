@@ -3,19 +3,19 @@
 from __future__ import annotations
 
 import re
-import shlex
 import time
 from collections.abc import Callable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass
+from typing import Annotated
 
 import typer
 from rich.live import Live
 from rich.text import Text
 
 from .. import tailnet, tmux
-from ..config import load_config
+from ..config import config_path, load_config
 from ..console import ask, die, line, out, warn
 from ..entrypoint import bootstrap, exec_process
 from ..tailnet import Device, Probe
@@ -43,17 +43,39 @@ class Pick:
     device: Device
     session: Session
 
+    @property
+    def label(self) -> str:
+        return label(self.session.name, self.device.name)
 
-@app.command()
-def there() -> None:
+
+def label(session: str, device: str) -> str:
+    """``session@device``, the one name a session goes by in every listing and in ``attach``."""
+    return f"{session}@{device}"
+
+
+def parse_target(target: str) -> tuple[str, str]:
+    """Split ``session@device`` into the session name and the device name.
+
+    The split is on the last ``@``. A host name cannot hold one, and a session name can.
+    """
+    session, at, device = target.rpartition("@")
+    if not at or not session or not device:
+        die(f"Expected SESSION@DEVICE, got '{target}'.")
+    return session, device
+
+
+@app.callback(invoke_without_command=True)
+def there(ctx: typer.Context) -> None:
     """Attach to a tmux session on any machine on the tailnet.
 
-    tmux-there lists the sessions of every online device on your Tailscale tailnet, this one
-    included, numbered in one sequence across all of them, and attaches to the one you pick.
-    A session on another machine is reached over ssh, a local one the way tmux-here reaches it.
+    Without a command, tmux-there lists the sessions of every online device on your Tailscale
+    tailnet, this one included, numbered in one sequence across all of them, and attaches to the
+    one you pick by its number or its session@device name. A session on another machine is
+    reached over ssh, a local one the way tmux-here reaches it.
 
-    Devices that answer with nothing are not listed at all. No tmux, no running tmux server and
-    a refused connection all mean the same thing here, and none of them is worth a message.
+    Devices with no sessions are not listed. A device that cannot be listed, because Tailscale
+    reports it offline, ssh cannot connect or does not answer in time, is named on stderr with
+    the reason. No tmux and no running tmux server on a device that answered need no message.
 
     Without a tailnet to read, this machine is the whole list and its sessions still show up.
     A stopped tailscaled is a reason to see fewer machines, not a reason to see none.
@@ -62,21 +84,59 @@ def there() -> None:
     to scan, with devices.only or devices.skip. Without a config file every online device is
     scanned, which is the intended way to run this.
     """
+    if ctx.invoked_subcommand is not None:
+        return
+
     tmux.require_installed()
 
-    config = load_config()
-    status = tailnet.status()
-    devices = tailnet.online_devices(status)
-    for name in tailnet.unmatched_names(devices, config):
-        warn(f"The config file asks for '{name}', and no device found matches it.")
-
     current = tmux.current_session()
-    found = _scan(tailnet.select_devices(devices, config))
+    found, tailnet_read = _collect()
     picks = flatten(found)
     if not picks:
-        die("No tmux session runs anywhere on the tailnet." if status else "No tmux session runs on this machine.")
+        where = "anywhere on the tailnet" if tailnet_read else "on this machine"
+        die(f"No tmux session runs {where}.")
 
-    _attach(_choose(found, picks, current), current)
+    pick = _choose(found, picks, current)
+    _attach(pick.device, pick.session.name, current)
+
+
+@app.command("ls")
+def list_all() -> None:
+    """List the sessions on every device, numbered and grouped the way the picker shows them.
+
+    This is the picker without its prompt, so a number read here is the number the picker
+    would take for the same scan. Messages about the scan go to stderr, and no session
+    anywhere prints nothing.
+    """
+    tmux.require_installed()
+
+    current = tmux.current_session()
+    found, _ = _collect()
+    if found:
+        _render(found, current)
+
+
+@app.command("attach")
+def attach(
+    target: Annotated[str, typer.Argument(metavar="SESSION@DEVICE", help="A name as tmux-there ls prints it.")],
+) -> None:
+    """Attach to the session named session@device, without asking.
+
+    The session has to be one that tmux-there ls would print. The device is looked up by its
+    host name or its MagicDNS name, the config file narrows it the same way it narrows the
+    listing, and only that one device is read to find the session. Nothing is ever created.
+    """
+    tmux.require_installed()
+
+    name, device_name = parse_target(target)
+    device = _resolve_device(device_name)
+    sessions = _sessions_on(device)
+    if not sessions:
+        die(f"No tmux session runs on {device.name}.")
+    if all(session.name != name for session in sessions):
+        die(f"No session '{name}' on {device.name}. tmux-there ls lists the sessions there are.")
+
+    _attach(device, name, tmux.current_session())
 
 
 def flatten(found: list[tuple[Device, list[Session]]]) -> list[Pick]:
@@ -88,11 +148,102 @@ def flatten(found: list[tuple[Device, list[Session]]]) -> list[Pick]:
     return [Pick(device, session) for device, sessions in found for session in sessions]
 
 
+def _collect() -> tuple[list[tuple[Device, list[Session]]], bool]:
+    """Scan the devices the config file leaves in, and say whether there was a tailnet to read."""
+    config = load_config()
+    status = tailnet.status()
+    devices = tailnet.online_devices(status)
+    for name in tailnet.unmatched_names(devices, config):
+        reason = tailnet.why_missing(status, name)
+        if reason is None:
+            warn(f"The config file asks for '{name}', and no device found matches it.")
+        else:
+            warn(f"{name}: {reason}. Its sessions are not listed.")
+
+    return _scan(tailnet.select_devices(devices, config)), bool(status)
+
+
+def _resolve_device(name: str) -> Device:
+    """The device ``attach`` was asked for, if the listing would have shown it, or a reason it would not.
+
+    A tailnet that cannot be read still leaves this machine, the same as it does for the listing,
+    so only a name that is not this machine fails on it.
+    """
+    config = load_config()
+    try:
+        status = tailnet.read()
+        problem = ""
+    except tailnet.TailnetUnavailable as unavailable:
+        status, problem = {}, str(unavailable)
+
+    devices = tailnet.online_devices(status)
+    device = tailnet.find_device(devices, name)
+    if device is None:
+        if problem:
+            die(f"Cannot read the tailnet to find '{name}'. {problem}")
+        if not status:
+            die(f"No device '{name}'. Without tailscale there is only this machine, {devices[0].name}.")
+
+        reason = tailnet.why_missing(status, name)
+        if reason is not None:
+            die(f"{name}: {reason}.")
+        online = ", ".join(device.name for device in devices)
+        die(f"No device '{name}' on the tailnet. Online: {online}.")
+
+    if problem:
+        warn(f"Cannot read the tailnet. {problem}")
+
+    if device not in tailnet.select_devices(devices, config):
+        die(f"Device '{device.name}' is left out by devices.only or devices.skip in {config_path()}.")
+
+    return device
+
+
+def _sessions_on(device: Device) -> list[Session]:
+    """The sessions of one device, read the way the listing reads them, or the reason ssh gave up.
+
+    A failed connection is not the same answer as no sessions here. The listing can afford to
+    leave a silent machine out, and an attach that was asked for this machine by name cannot.
+    """
+    if device.is_self:
+        return tmux.list_sessions()
+
+    (probe,) = _probe_all([device])
+    reason = probe_failure(probe)
+    if reason is not None:
+        die(f"{device.name}: {reason}.")
+    return probe.sessions
+
+
+def probe_failure(probe: Probe) -> str | None:
+    """Why ssh gave no listing for the device, ``None`` when it connected and tmux answered.
+
+    The reason reads after ``"<name>: "``, so the listing and ``attach`` can say it the same way.
+    A host that answered, with no tmux or no tmux server on it, has nothing to explain: that is
+    a machine without sessions, not a failure.
+    """
+    # A probe waiting on a Tailscale SSH check keeps no deadline, so only the others end up here
+    if probe.returncode is not None and probe.returncode < 0:
+        return f"ssh did not answer within {_SCAN_DEADLINE:g} seconds"
+
+    if not probe.unreachable:
+        return None
+
+    reason = f"ssh could not connect to {probe.device.host}"
+    if probe.login_url:
+        reason += f" after Tailscale SSH asked for a check at {probe.login_url}"
+    if probe.output:
+        reason += f": {probe.output[-1]}"
+    return reason
+
+
 def _scan(devices: list[Device]) -> list[tuple[Device, list[Session]]]:
-    """Every selected device and the sessions on it, with the silent devices left out.
+    """Every selected device and the sessions on it, with the devices that have none left out.
 
     This machine is read through the tmux binary, with no ssh in the way. The rest are probed
     over ssh, the canary alone first so that at most one authentication check is outstanding.
+    A device ssh could not get a listing from is named on stderr with the reason, because a
+    missing machine with no word about it reads as a machine with no sessions.
     """
     sessions: dict[Device, list[Session]] = {}
 
@@ -102,6 +253,9 @@ def _scan(devices: list[Device]) -> list[tuple[Device, list[Session]]]:
 
     for probe in _probe_all([device for device in devices if not device.is_self]):
         sessions[probe.device] = probe.sessions
+        reason = probe_failure(probe)
+        if reason is not None:
+            warn(f"{probe.device.name}: {reason}. Its sessions are not listed.")
 
     return [(device, sessions[device]) for device in devices if sessions.get(device)]
 
@@ -203,6 +357,12 @@ def _progress() -> Iterator[Callable[[list[Probe]], None]]:
 
 
 def _choose(found: list[tuple[Device, list[Session]]], picks: list[Pick], current: str) -> Pick:
+    _render(found, current)
+    return select(picks, ask("Enter number or session@device to attach (Ctrl+C to cancel): "))
+
+
+def _render(found: list[tuple[Device, list[Session]]], current: str) -> None:
+    """The listing the picker and ``ls`` share: one block per device, numbered as ``flatten`` orders them."""
     line()
 
     index = 0
@@ -215,7 +375,7 @@ def _choose(found: list[tuple[Device, list[Session]]], picks: list[Pick], curren
         for session in sessions:
             index += 1
             row = Text(f"  {index:2d}) ")
-            row.append(session.name, style="green")
+            row.append(label(session.name, device.name), style="green")
             if device.is_self and session.name == current:
                 row.append(" ")
                 row.append("[current]", style="yellow")
@@ -224,37 +384,50 @@ def _choose(found: list[tuple[Device, list[Session]]], picks: list[Pick], curren
 
         line()
 
-    selection = ask("Enter number to attach (Ctrl+C to cancel): ")
 
-    if not _NUMBER.fullmatch(selection):
-        die(f"Invalid selection: {selection}")
+def select(picks: list[Pick], answer: str) -> Pick:
+    """The pick an answer to the prompt means: a number from the list, or a name exactly as listed."""
+    if _NUMBER.fullmatch(answer):
+        number = int(answer) - 1
+        if number < 0 or number >= len(picks):
+            die(f"Selection out of range: {answer}")
+        return picks[number]
 
-    number = int(selection) - 1
-    if number < 0 or number >= len(picks):
-        die(f"Selection out of range: {selection}")
+    for pick in picks:
+        if pick.label == answer:
+            return pick
 
-    return picks[number]
+    die(f"Invalid selection: {answer}")
 
 
-def _attach(pick: Pick, current: str) -> None:
+def _attach(device: Device, name: str, current: str) -> None:
     """Hand the terminal over to the session, replacing this process on the way out.
 
     The attach carries no ``-d``. A machine you are away from may well have a client of its own
     on the session, open for weeks, and reaching that session from the road is no reason to
     throw the other client off it.
+
+    The target carries tmux's ``=`` prefix, which asks for the exact name. Without it tmux falls
+    back to a prefix match, and ``notes`` would attach to ``notes-old`` the day ``notes`` is gone.
     """
-    if pick.device.is_self:
-        _attach_locally(pick.session.name, current)
+    if device.is_self:
+        _attach_locally(name, current)
         return
 
     # ssh joins everything after the host name into one string for a login shell on the other
     # side, where a session name with a space or a quote in it would come apart. Locally there
     # is no shell between the argv and tmux, which is why tmux-here needs none of this.
-    name = shlex.quote(pick.session.name)
+    # shlex.quote leaves "=notes" bare as safe, and zsh then expands a leading "=" into the path
+    # of a command called notes, so the quotes are put on whether shlex thinks they are needed.
+    target = "'" + _exact(name).replace("'", "'\"'\"'") + "'"
     try:
-        exec_process(["ssh", "-t", pick.device.host, "tmux", "attach", "-t", name])
+        exec_process(["ssh", "-t", device.host, "tmux", "attach", "-t", target])
     except OSError:
         die("ssh is not installed.")
+
+
+def _exact(name: str) -> str:
+    return f"={name}"
 
 
 def _attach_locally(name: str, current: str) -> None:
@@ -263,9 +436,9 @@ def _attach_locally(name: str, current: str) -> None:
         return
 
     if tmux.inside_tmux():
-        tmux.switch_client(name)
+        tmux.switch_client(_exact(name))
     else:
-        tmux.exec_attach(name)
+        tmux.exec_attach(_exact(name))
 
 
 def main() -> None:

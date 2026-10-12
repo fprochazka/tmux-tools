@@ -23,7 +23,8 @@ def line(text: Text | str = "") -> None:
 
 
 def warn(message: str) -> None:
-    out.print(Text(message, style="yellow"))
+    """A message about the run rather than its result, kept off stdout so a pipe gets only the result."""
+    err.print(Text(message, style="yellow"))
 
 
 def error(message: str) -> None:

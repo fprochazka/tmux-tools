@@ -71,23 +71,56 @@ Attach to a tmux session on any machine on your Tailscale tailnet.
 $ tmux-there
 
 workshop (local)
-   1) notes
+   1) notes@workshop
       /home/you/notes
 
 attic
-   2) acme/shop
+   2) acme/shop@attic
       /home/you/code/acme/shop
-   3) acme/shop/new-checkout
+   3) acme/shop/new-checkout@attic
       /home/you/code/acme/shop/.worktrees/new-checkout
 
-Enter number to attach (Ctrl+C to cancel):
+Enter number or session@device to attach (Ctrl+C to cancel):
 ```
 
-The numbering runs in one sequence across the devices, this machine first and the others by name, so the answer is a single number.
+Every session goes by `session@device`, the session name and the host name of the machine it runs on. The numbering runs in one sequence across the devices, this machine first and the others by name, so the answer is a single number, or the `session@device` name as listed.
 
-The devices come from `tailscale status --json`: every one that is online and is not a phone or a tablet. A device that answers with nothing is not listed at all, because no tmux installed, no tmux server running and a refused connection are the same answer. Without a tailnet to read, the listing is this machine alone.
+`tmux-there ls` prints the same listing, with the same numbers, and stops there instead of asking. Messages about the scan go to stderr, and no session anywhere prints nothing:
 
-A remote pick hands the terminal to `ssh -t <host> tmux attach -t <name>` and replaces `tmux-there` with it. The attach carries no `-d`, so a session another client already holds stays with it. A local pick behaves like `tmux-here`.
+```
+$ tmux-there ls
+
+workshop (local)
+   1) notes@workshop
+      /home/you/notes
+
+attic
+   2) acme/shop@attic
+      /home/you/code/acme/shop
+   3) acme/shop/new-checkout@attic
+      /home/you/code/acme/shop/.worktrees/new-checkout
+
+```
+
+`tmux-there attach <session@device>` attaches to that session without asking:
+
+```
+$ tmux-there attach acme/shop/new-checkout@attic
+```
+
+The name is split on its last `@`, so a session name may contain one. The device is the host name `ls` shows, or its MagicDNS name. Only that device is read, and the session has to be one `tmux-there ls` would print: a device the config file leaves out cannot be attached either. `attach` never creates a session. It exits with an error that says which part failed: tailscale could not be read, the device is unknown, offline or left out by the config, ssh could not reach it, or the session does not run there. The name has to match exactly, where `tmux attach -t` alone would settle for a prefix.
+
+The devices come from `tailscale status --json`: every one that is online and is not a phone or a tablet. A device with no sessions is not listed, and one that answered without tmux or without a running tmux server gets no message. A device that could not be listed is named on stderr with the reason, one line each, and `attach` gives the same reason when it fails:
+
+```
+attic: Tailscale reports it offline. Its sessions are not listed.
+cache: ssh could not connect to cache: ssh: connect to host cache port 22: Connection refused. Its sessions are not listed.
+runner: ssh did not answer within 15 seconds. Its sessions are not listed.
+```
+
+Without a tailnet to read, the listing is this machine alone.
+
+A remote pick hands the terminal to `ssh -t <host> tmux attach -t '=<name>'` and replaces `tmux-there` with it. The attach carries no `-d`, so a session another client already holds stays with it. A local pick behaves like `tmux-here`.
 
 Tailscale SSH asks for a browser login every so often, in the middle of a scan:
 

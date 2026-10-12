@@ -10,8 +10,22 @@ from pathlib import Path
 
 import pytest
 
+from tmux_tools import tailnet as tailnet_module
 from tmux_tools.config import Config
-from tmux_tools.tailnet import Device, choose_canary, online_devices, select_devices, status, unmatched_names
+from tmux_tools.tailnet import (
+    Device,
+    Probe,
+    TailnetUnavailable,
+    choose_canary,
+    find_device,
+    online_devices,
+    peer_named,
+    read,
+    select_devices,
+    status,
+    unmatched_names,
+    why_missing,
+)
 
 
 @pytest.fixture
@@ -159,7 +173,7 @@ def test_a_machine_without_tailscale_reads_an_empty_tailnet_and_says_nothing(
 ):
     tailscale(monkeypatch, installed=False)
     assert status() == {}
-    assert capsys.readouterr().out == ""
+    assert capsys.readouterr().err == ""
 
 
 def test_a_tailscale_that_cannot_answer_reads_an_empty_tailnet_and_warns(
@@ -167,7 +181,7 @@ def test_a_tailscale_that_cannot_answer_reads_an_empty_tailnet_and_warns(
 ):
     tailscale(monkeypatch, returncode=1, stdout="")
     assert status() == {}
-    assert "Cannot read the tailnet" in capsys.readouterr().out
+    assert "Cannot read the tailnet" in capsys.readouterr().err
 
 
 def test_an_answer_that_is_not_json_reads_an_empty_tailnet_and_warns(
@@ -175,9 +189,99 @@ def test_an_answer_that_is_not_json_reads_an_empty_tailnet_and_warns(
 ):
     tailscale(monkeypatch, stdout="Tailscale is stopped.\n")
     assert status() == {}
-    assert "Cannot read the tailnet" in capsys.readouterr().out
+    assert "Cannot read the tailnet" in capsys.readouterr().err
 
 
 def test_a_tailnet_that_answers_is_read_as_it_is(monkeypatch: pytest.MonkeyPatch):
     tailscale(monkeypatch, stdout='{"Self": {"HostName": "hq", "DNSName": "hq.example.ts.net."}}')
     assert names(online_devices(status())) == ["hq"]
+
+
+def test_a_tailscale_that_is_logged_out_reads_an_empty_tailnet_and_warns(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    tailscale(monkeypatch, stdout='{"BackendState": "NeedsLogin", "Self": {"HostName": "hq"}}')
+    assert status() == {}
+    assert "NeedsLogin" in capsys.readouterr().err
+
+
+def test_reading_a_tailnet_that_cannot_answer_says_why(monkeypatch: pytest.MonkeyPatch):
+    tailscale(monkeypatch, returncode=1, stdout="")
+    with pytest.raises(TailnetUnavailable, match="logged in"):
+        read()
+
+
+def test_reading_without_tailscale_is_an_empty_tailnet(monkeypatch: pytest.MonkeyPatch):
+    tailscale(monkeypatch, installed=False)
+    assert read() == {}
+
+
+def test_a_device_is_found_by_its_host_name_or_its_magicdns_name(tailnet: dict):
+    devices = online_devices(tailnet)
+    assert find_device(devices, "acme-laptop") == find_device(devices, "laptop")
+    assert find_device(devices, "typo") is None
+
+
+def test_a_host_name_wins_over_another_devices_magicdns_name():
+    devices = [Device(name="a", host="b", tagged=False, is_self=False), device("b")]
+    found = find_device(devices, "b")
+    assert found is not None
+    assert found.name == "b"
+
+
+def test_an_offline_peer_is_still_known_by_either_name(tailnet: dict):
+    assert peer_named(tailnet, "attic") is not None
+    assert peer_named(tailnet, "pixel-9a") is peer_named(tailnet, "Pixel 9a")
+    assert peer_named(tailnet, "typo") is None
+
+
+def probe(monkeypatch: pytest.MonkeyPatch, script: str) -> Probe:
+    """A probe whose ssh connection is a local shell script, so its exit code and output are real."""
+    monkeypatch.setattr(tailnet_module, "_ssh", lambda host: ("sh", "-c", script, "sh"))
+    probe = Probe(device("laptop"))
+    probe.run()
+    return probe
+
+
+def test_a_probe_that_ssh_could_not_connect_is_unreachable(monkeypatch: pytest.MonkeyPatch):
+    found = probe(monkeypatch, "echo 'ssh: connect to host laptop port 22: Connection refused' >&2; exit 255")
+    assert found.unreachable is True
+    assert found.output == ["ssh: connect to host laptop port 22: Connection refused"]
+
+
+def test_a_probe_where_tmux_answered_is_reachable_even_without_sessions(monkeypatch: pytest.MonkeyPatch):
+    found = probe(monkeypatch, "echo 'no server running on /tmp/tmux-1000/default' >&2; exit 1")
+    assert found.unreachable is False
+    assert found.sessions == []
+
+
+def test_a_probe_keeps_the_sessions_apart_from_the_noise(monkeypatch: pytest.MonkeyPatch):
+    found = probe(monkeypatch, "echo '# Authentication checked'; printf 'notes\\t/home/you/notes\\n'")
+    assert found.unreachable is False
+    assert [session.name for session in found.sessions] == ["notes"]
+    assert found.output == ["# Authentication checked"]
+
+
+def test_an_offline_device_is_explained_as_offline(tailnet: dict):
+    assert why_missing(tailnet, "attic") == "Tailscale reports it offline"
+
+
+def test_a_phone_is_explained_as_a_phone(tailnet: dict):
+    assert why_missing(tailnet, "Pixel 9a") == "it is a phone or a tablet, which has no ssh server to reach"
+
+
+def test_a_magicdns_name_is_explained_with_the_host_name_to_use(tailnet: dict):
+    assert why_missing(tailnet, "laptop") == (
+        "that is its MagicDNS name, the config file has to use its host name 'acme-laptop'"
+    )
+
+
+def test_a_name_the_tailnet_does_not_know_has_no_explanation(tailnet: dict):
+    assert why_missing(tailnet, "typo") is None
+
+
+def test_a_probe_remembers_the_tailscale_ssh_check_it_was_asked_for(monkeypatch: pytest.MonkeyPatch):
+    script = "echo '# To authenticate, visit: https://login.tailscale.com/a/1f2e3d4c5b6a'; exit 255"
+    found = probe(monkeypatch, script)
+    assert found.login_url == "https://login.tailscale.com/a/1f2e3d4c5b6a"
+    assert found.unreachable is True
