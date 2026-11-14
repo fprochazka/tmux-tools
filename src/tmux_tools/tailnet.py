@@ -50,7 +50,7 @@ class TailnetUnavailable(Exception):
     """tailscale is installed and the tailnet cannot be read from it. The message says why."""
 
 
-def status() -> dict[str, Any]:
+def status(timeout: float | None = None) -> dict[str, Any]:
     """The tailnet as ``tailscale status --json`` describes it, empty when there is none to read.
 
     Every way of failing here ends in the same place, an empty tailnet, which leaves the caller
@@ -63,23 +63,31 @@ def status() -> dict[str, Any]:
     are missing.
     """
     try:
-        return read()
+        return read(timeout)
     except TailnetUnavailable as problem:
         warn(f"Cannot read the tailnet, listing this machine only. {problem}")
         return {}
 
 
-def read() -> dict[str, Any]:
+def read(timeout: float | None = None) -> dict[str, Any]:
     """The tailnet, empty without tailscale, and ``TailnetUnavailable`` when tailscale cannot answer.
 
     stderr is left alone, so tailscale explains a logged out or stopped daemon in its own words
     before the reason given here. A daemon that is stopped or logged out may still answer with
     JSON, describing a tailnet it is not on; ``BackendState`` is what tells that answer apart.
+
+    No timeout is the default, because a scan someone waits on can wait for tailscaled too. A
+    completion has a few seconds in total, and a hung daemon must not take all of them silently.
     """
     if shutil.which("tailscale") is None:
         return {}
 
-    result = subprocess.run(["tailscale", "status", "--json"], stdout=subprocess.PIPE, text=True, check=False)
+    try:
+        result = subprocess.run(
+            ["tailscale", "status", "--json"], stdout=subprocess.PIPE, text=True, check=False, timeout=timeout
+        )
+    except subprocess.TimeoutExpired:
+        raise TailnetUnavailable(f"tailscale status did not answer within {timeout:g} seconds.") from None
     if result.returncode != 0:
         raise TailnetUnavailable("Check that tailscaled runs and is logged in.")
 
@@ -231,7 +239,7 @@ class Probe:
     shape of one, which nothing else the connection prints does.
     """
 
-    def __init__(self, device: Device) -> None:
+    def __init__(self, device: Device, *, batch: bool = False) -> None:
         self.device = device
         self.sessions: list[tmux.Session] = []
         self.waiting_for_login = False
@@ -240,7 +248,7 @@ class Probe:
         self.output: list[str] = []
         self.returncode: int | None = None
         self._process = subprocess.Popen(
-            tmux.list_sessions_command(_ssh(device.host)),
+            tmux.list_sessions_command(_ssh(device.host, batch=batch)),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             # Several probes and the picker would otherwise read the same terminal between
@@ -283,13 +291,17 @@ class Probe:
             self.output.append(text)
 
 
-def _ssh(host: str) -> tmux.Prefix:
+def _ssh(host: str, *, batch: bool = False) -> tmux.Prefix:
     """The ssh command a probe runs behind.
 
     ``BatchMode=no`` leaves ssh able to ask, which Tailscale SSH now and then needs it to be.
+    ``batch`` turns that off for a probe nobody watches, such as one behind a shell completion:
+    a password or host key prompt on /dev/tty would draw over the command line being typed and
+    eat its keystrokes. Tailscale SSH still prints its check URL as a banner in batch mode.
     No ``-t``: a listing wants no terminal, and only the attach does.
     """
-    return ("ssh", "-o", f"ConnectTimeout={CONNECT_TIMEOUT}", "-o", "BatchMode=no", host)
+    mode = "yes" if batch else "no"
+    return ("ssh", "-o", f"ConnectTimeout={CONNECT_TIMEOUT}", "-o", f"BatchMode={mode}", host)
 
 
 def _local_device() -> Device:

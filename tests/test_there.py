@@ -1,4 +1,4 @@
-"""Reading a probe over ssh, the picker and its numbering, tmux-there ls, and tmux-there attach."""
+"""Reading a probe over ssh, the picker and its numbering, tmux-there ls, tmux-there attach, and the completion."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import json
 import shlex
 import shutil
 import socket
+import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import NoReturn
@@ -13,10 +14,11 @@ from typing import NoReturn
 import pytest
 from typer.testing import CliRunner
 
-from tmux_tools import tailnet, tmux
+from tmux_tools import cache, tailnet, tmux
 from tmux_tools.commands import there
 from tmux_tools.commands.there import Pick, flatten
 from tmux_tools.config import Config
+from tmux_tools.console import silenced
 from tmux_tools.tailnet import Device, Probe
 from tmux_tools.tmux import Session, parse_session
 
@@ -32,6 +34,13 @@ TRANSCRIPT = [
 
 HQ = Device(name="hq", host="hq", tagged=False, is_self=True)
 LAPTOP = Device(name="acme-laptop", host="laptop", tagged=False, is_self=False)
+
+
+@pytest.fixture(autouse=True)
+def cache_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    # Every full scan writes the names it found, and the test run must not write them over yours
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    return tmp_path / "cache"
 
 
 def parse_all(lines: list[str]) -> list[Session]:
@@ -79,7 +88,7 @@ def test_this_machine_is_read_through_tmux_and_never_handed_to_a_probe(monkeypat
     local = Session("personal/notes", "/home/you/notes")
     probed: list[Device] = []
 
-    def record(devices: list[Device]) -> list[Probe]:
+    def record(devices: list[Device], deadline: float | None = None) -> list[Probe]:
         probed.extend(devices)
         return []
 
@@ -169,7 +178,7 @@ def world(monkeypatch: pytest.MonkeyPatch) -> World:
             raise tailnet.TailnetUnavailable(world.unavailable)
         return world.tailnet
 
-    def probe_all(devices: list[Device]) -> list[FakeProbe]:
+    def probe_all(devices: list[Device], deadline: float | None = None) -> list[FakeProbe]:
         world.probed.extend(devices)
         return [replace(world.probe, device=device) for device in devices]
 
@@ -326,8 +335,8 @@ acme-laptop
 
 
 def test_ls_prints_the_numbered_listing_grouped_by_device(world: World, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(tailnet, "status", lambda: world.tailnet)
-    monkeypatch.setattr(there, "_scan", lambda devices: TWO_DEVICES)
+    monkeypatch.setattr(tailnet, "status", lambda timeout=None: world.tailnet)
+    monkeypatch.setattr(there, "_scan", lambda devices, deadline=None: TWO_DEVICES)
     monkeypatch.setattr(tmux, "current_session", lambda: "personal/notes")
     result = CliRunner().invoke(there.app, ["ls"])
     assert result.exit_code == 0
@@ -335,8 +344,8 @@ def test_ls_prints_the_numbered_listing_grouped_by_device(world: World, monkeypa
 
 
 def test_the_picker_is_the_ls_listing_and_a_prompt(world: World, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(tailnet, "status", lambda: world.tailnet)
-    monkeypatch.setattr(there, "_scan", lambda devices: TWO_DEVICES)
+    monkeypatch.setattr(tailnet, "status", lambda timeout=None: world.tailnet)
+    monkeypatch.setattr(there, "_scan", lambda devices, deadline=None: TWO_DEVICES)
     monkeypatch.setattr(tmux, "current_session", lambda: "personal/notes")
     monkeypatch.setattr(there, "ask", lambda question: "3")
     result = CliRunner().invoke(there.app, [])
@@ -346,16 +355,16 @@ def test_the_picker_is_the_ls_listing_and_a_prompt(world: World, monkeypatch: py
 
 
 def test_ls_with_nothing_anywhere_prints_nothing(world: World, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(tailnet, "status", lambda: world.tailnet)
-    monkeypatch.setattr(there, "_scan", lambda devices: [])
+    monkeypatch.setattr(tailnet, "status", lambda timeout=None: world.tailnet)
+    monkeypatch.setattr(there, "_scan", lambda devices, deadline=None: [])
     result = CliRunner().invoke(there.app, ["ls"])
     assert result.exit_code == 0
     assert result.stdout == ""
 
 
 def test_no_command_is_the_picker(world: World, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(tailnet, "status", lambda: world.tailnet)
-    monkeypatch.setattr(there, "_scan", lambda devices: [(LAPTOP, [Session("work/db", "/srv/db")])])
+    monkeypatch.setattr(tailnet, "status", lambda timeout=None: world.tailnet)
+    monkeypatch.setattr(there, "_scan", lambda devices, deadline=None: [(LAPTOP, [Session("work/db", "/srv/db")])])
     monkeypatch.setattr(there, "ask", lambda question: "work/db@acme-laptop")
     result = CliRunner().invoke(there.app, [])
     assert result.exit_code == 0
@@ -404,8 +413,8 @@ def test_the_scan_says_nothing_about_a_device_that_answered_without_sessions(
 def test_the_config_names_get_the_reason_they_are_not_listed(
     world: World, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):
-    monkeypatch.setattr(tailnet, "status", lambda: world.tailnet)
-    monkeypatch.setattr(there, "_scan", lambda devices: [])
+    monkeypatch.setattr(tailnet, "status", lambda timeout=None: world.tailnet)
+    monkeypatch.setattr(there, "_scan", lambda devices, deadline=None: [])
     world.config = Config(only=("attic", "Pixel 9a", "laptop", "typo", "workshop"))
     there._collect()
     assert capsys.readouterr().err.splitlines() == [
@@ -415,3 +424,144 @@ def test_the_config_names_get_the_reason_they_are_not_listed(
         " Its sessions are not listed.",
         "The config file asks for 'typo', and no device found matches it.",
     ]
+
+
+def kept() -> str:
+    return cache.sessions_path().read_text()
+
+
+def test_ls_keeps_the_names_it_listed_for_the_completion(world: World, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(tailnet, "status", lambda timeout=None: world.tailnet)
+    monkeypatch.setattr(there, "_scan", lambda devices, deadline=None: TWO_DEVICES)
+    CliRunner().invoke(there.app, ["ls"])
+    assert kept() == "personal/notes@hq\nwork/releases@acme-laptop\nwork/db@acme-laptop\n"
+
+
+def test_nothing_anywhere_is_kept_as_an_empty_list(world: World, monkeypatch: pytest.MonkeyPatch):
+    cache.save_sessions(["work/db@acme-laptop"])
+    monkeypatch.setattr(tailnet, "status", lambda timeout=None: world.tailnet)
+    monkeypatch.setattr(there, "_scan", lambda devices, deadline=None: [])
+    CliRunner().invoke(there.app, ["ls"])
+    assert kept() == ""
+
+
+def test_attach_reads_one_device_and_keeps_no_names(world: World):
+    world.probe = FakeProbe(sessions=[Session("work/db", "/srv/db")])
+    attach("work/db@acme-laptop")
+    assert not cache.sessions_path().exists()
+
+
+def test_the_kept_names_are_replaced_and_never_rewritten_in_place(cache_home: Path):
+    cache.save_sessions(["old@hq"])
+    with cache.sessions_path().open() as reader:
+        cache.save_sessions(["new@hq", "my notes@hq"])
+        # A reader that opened the file before the scan finished still sees the whole old list
+        assert reader.read() == "old@hq\n"
+    assert kept() == "new@hq\nmy notes@hq\n"
+    assert [path.name for path in cache.sessions_path().parent.iterdir()] == ["there-sessions"]
+
+
+def test_a_cache_that_cannot_be_written_is_no_reason_to_fail(cache_home: Path):
+    cache_home.write_text("a file where the directory should be")
+    cache.save_sessions(["work/db@acme-laptop"])
+
+
+def test_ls_names_prints_bare_names_and_nothing_on_stderr(world: World, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(tailnet, "status", lambda timeout=None: world.tailnet)
+    monkeypatch.setattr(there, "_scan", lambda devices, deadline=None: TWO_DEVICES)
+    monkeypatch.setattr(tmux, "current_session", lambda: "personal/notes")
+    # A name in only that matches no device warns in every other scan
+    world.config = Config(only=("hq", "acme-laptop", "typo"))
+    result = CliRunner().invoke(there.app, ["ls", "--names"])
+    assert result.exit_code == 0
+    assert result.stdout == "personal/notes@hq\nwork/releases@acme-laptop\nwork/db@acme-laptop\n"
+    assert result.stderr == ""
+    assert kept() == result.stdout
+
+
+def test_ls_names_keeps_the_completion_deadline_for_tailscale_and_the_probes(
+    world: World, monkeypatch: pytest.MonkeyPatch
+):
+    seen: dict[str, float | None] = {}
+
+    def status(timeout: float | None = None) -> dict:
+        seen["timeout"] = timeout
+        return world.tailnet
+
+    def scan(devices: list[Device], deadline: float | None = None) -> list:
+        seen["deadline"] = deadline
+        return []
+
+    monkeypatch.setattr(tailnet, "status", status)
+    monkeypatch.setattr(there, "_scan", scan)
+    started = time.monotonic()
+    CliRunner().invoke(there.app, ["ls", "--names"])
+    ended = time.monotonic()
+    assert 0 < seen["timeout"] <= 5
+    assert started + 5 <= seen["deadline"] <= ended + 5
+
+
+def test_ls_without_names_waits_as_long_as_it_takes(world: World, monkeypatch: pytest.MonkeyPatch):
+    seen: list[float | None] = []
+    monkeypatch.setattr(tailnet, "status", lambda timeout=None: seen.append(timeout) or world.tailnet)
+    monkeypatch.setattr(there, "_scan", lambda devices, deadline=None: seen.append(deadline) or [])
+    CliRunner().invoke(there.app, ["ls"])
+    assert seen == [None, None]
+
+
+def scripted_probes(monkeypatch: pytest.MonkeyPatch, scripts: dict[str, str]) -> list[str]:
+    """Make each device's ssh connection a local shell script, and record the batch mode asked for."""
+    batch_modes: list[str] = []
+
+    def ssh(host: str, *, batch: bool = False) -> tuple[str, ...]:
+        batch_modes.append(f"{host}:{batch}")
+        return ("sh", "-c", scripts[host], "sh")
+
+    monkeypatch.setattr(tailnet, "_ssh", ssh)
+    monkeypatch.setattr(tailnet, "require_ssh", lambda: None)
+    return batch_modes
+
+
+LOGIN = "echo '# To authenticate, visit: https://login.tailscale.com/a/1f2e3d4c5b6a'; exec sleep 30"
+ANSWER = "printf 'work/db\\t/srv/db\\n'"
+
+
+def test_a_hurried_scan_leaves_out_a_device_that_asks_for_a_login(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    cache_box = Device(name="cache", host="cache", tagged=False, is_self=False)
+    batch_modes = scripted_probes(monkeypatch, {"laptop": LOGIN, "cache": ANSWER})
+    started = time.monotonic()
+    with silenced():
+        probes = there._probe_all([LAPTOP, cache_box], started + 5)
+    assert time.monotonic() - started < 2
+    assert {probe.device.name: [s.name for s in probe.sessions] for probe in probes} == {
+        "acme-laptop": [],
+        "cache": ["work/db"],
+    }
+    assert sorted(batch_modes) == ["cache:True", "laptop:True"]
+    assert capsys.readouterr().err == ""
+
+
+def test_a_hurried_scan_stops_at_its_deadline(monkeypatch: pytest.MonkeyPatch):
+    scripted_probes(monkeypatch, {"laptop": "exec sleep 30"})
+    started = time.monotonic()
+    (probe,) = there._probe_all([LAPTOP], started + 0.5)
+    assert 0.5 <= time.monotonic() - started < 2
+    assert probe.unreachable
+
+
+def test_a_watched_scan_asks_ssh_to_be_able_to_ask(monkeypatch: pytest.MonkeyPatch):
+    batch_modes = scripted_probes(monkeypatch, {"laptop": ANSWER})
+    (probe,) = there._probe_all([LAPTOP])
+    assert batch_modes == ["laptop:False"]
+    assert [session.name for session in probe.sessions] == ["work/db"]
+
+
+@pytest.mark.parametrize("shell", ["bash", "zsh"])
+def test_the_completion_scripts_read_the_file_ls_writes(shell: str, cache_home: Path):
+    result = CliRunner().invoke(there.app, ["completion", shell])
+    assert result.exit_code == 0
+    relative = cache.sessions_path().relative_to(cache_home)
+    assert "${XDG_CACHE_HOME:-$HOME/.cache}/" + str(relative) in result.stdout
+    assert "tmux-there ls --names" in result.stdout

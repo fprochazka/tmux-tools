@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import NoReturn
 
 from rich.console import Console
@@ -34,6 +37,28 @@ def error(message: str) -> None:
 def die(message: str) -> NoReturn:
     err.print(Text(message, style="red"))
     raise SystemExit(1)
+
+
+@contextmanager
+def silenced() -> Iterator[None]:
+    """Nothing reaches stderr while this is open, from this process or from the ones it starts.
+
+    For a run whose stdout is read by a shell completion while the user looks at the prompt, where
+    any line on stderr lands in the middle of the command line being typed. The console is told
+    to keep quiet, and file descriptor 2 points at /dev/null for the child processes, tailscale
+    among them, that write there on their own.
+    """
+    err.quiet = True
+    saved = os.dup(2)
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    try:
+        os.dup2(devnull, 2)
+        yield
+    finally:
+        os.dup2(saved, 2)
+        os.close(saved)
+        os.close(devnull)
+        err.quiet = False
 
 
 def ask(question: str) -> str:

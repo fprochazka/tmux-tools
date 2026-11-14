@@ -178,6 +178,27 @@ uv tool install --editable . --reinstall
 
 To remove it, run `uv tool uninstall tmux-tools`.
 
+### Shell completion
+
+`tmux-there` completes the name after `attach`, and the typed text can match anywhere in `session@device`: `attach checkout<Tab>` finds `acme/shop/new-checkout@attic`. Print the script for your shell and put it where the shell looks for completions.
+
+For zsh, any directory on your `fpath` works, as long as it is on `fpath` before `compinit` runs:
+
+```bash
+tmux-there completion zsh > ~/.zsh/completions/_tmux-there
+```
+
+For bash, the script needs [bash-completion](https://github.com/scop/bash-completion), which loads it from its user directory:
+
+```bash
+mkdir -p ~/.local/share/bash-completion/completions
+tmux-there completion bash > ~/.local/share/bash-completion/completions/tmux-there
+```
+
+Every `tmux-there` and `tmux-there ls` keeps the names it listed in `$XDG_CACHE_HOME/fprochazka-tmux-tools/there-sessions`, or in `~/.cache/fprochazka-tmux-tools/there-sessions`. For 5 seconds after that, Tab reads the file and starts no Python. With an older file, Tab scans the tailnet first and waits for it, at most 5 seconds. A device that does not answer within that time is left out of the completion. A device that asks for a Tailscale SSH check is also left out, because nobody would see the URL. Run `tmux-there ls` once to do the check, and the device comes back in the completion.
+
+Regenerate the script only when a new version changes it. The scan runs the installed `tmux-there`, so an upgrade needs no new script.
+
 ## Development
 
 ```bash
@@ -195,12 +216,14 @@ src/tmux_tools/
 ├── entrypoint.py     # the bootstrap every command runs first, and the exec handover
 ├── console.py        # the stdout and stderr consoles, and the prompt
 ├── config.py         # the optional config file
+├── cache.py          # the session names the last scan found, for the shell completion
 ├── tmux.py           # the tmux binary, here or behind ssh, and matching panes against a directory
 ├── tailnet.py        # the devices on the tailnet, and reading their sessions over ssh
 ├── naming.py         # session names proposed from the git remote and the branch
-└── commands/
-    ├── here.py       # the `tmux-here` command
-    └── there.py      # the `tmux-there` command
+├── commands/
+│   ├── here.py       # the `tmux-here` command
+│   └── there.py      # the `tmux-there` command
+└── completions/      # the bash and zsh scripts `tmux-there completion` prints
 
 tests/                # unit tests for naming, pane matching, device selection, the prompts and the config file
 ```

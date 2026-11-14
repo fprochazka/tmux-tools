@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import socket
 import subprocess
@@ -211,6 +212,20 @@ def test_reading_a_tailnet_that_cannot_answer_says_why(monkeypatch: pytest.Monke
         read()
 
 
+def test_a_tailscale_that_hangs_is_given_up_on_at_the_timeout(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    hung = tmp_path / "tailscale"
+    hung.write_text("#!/bin/sh\nexec sleep 30\n")
+    hung.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+    with pytest.raises(TailnetUnavailable, match="did not answer within 0.2 seconds"):
+        read(timeout=0.2)
+
+
+def test_a_probe_nobody_watches_runs_ssh_in_batch_mode():
+    assert tailnet_module._ssh("laptop", batch=True)[3:5] == ("-o", "BatchMode=yes")
+    assert tailnet_module._ssh("laptop")[3:5] == ("-o", "BatchMode=no")
+
+
 def test_reading_without_tailscale_is_an_empty_tailnet(monkeypatch: pytest.MonkeyPatch):
     tailscale(monkeypatch, installed=False)
     assert read() == {}
@@ -237,7 +252,7 @@ def test_an_offline_peer_is_still_known_by_either_name(tailnet: dict):
 
 def probe(monkeypatch: pytest.MonkeyPatch, script: str) -> Probe:
     """A probe whose ssh connection is a local shell script, so its exit code and output are real."""
-    monkeypatch.setattr(tailnet_module, "_ssh", lambda host: ("sh", "-c", script, "sh"))
+    monkeypatch.setattr(tailnet_module, "_ssh", lambda host, batch=False: ("sh", "-c", script, "sh"))
     probe = Probe(device("laptop"))
     probe.run()
     return probe

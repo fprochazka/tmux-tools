@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import re
+import sys
 import time
 from collections.abc import Callable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass
+from enum import StrEnum
+from importlib import resources
 from typing import Annotated
 
 import typer
@@ -15,8 +18,9 @@ from rich.live import Live
 from rich.text import Text
 
 from .. import tailnet, tmux
+from ..cache import save_sessions
 from ..config import config_path, load_config
-from ..console import ask, die, line, out, warn
+from ..console import ask, die, line, out, silenced, warn
 from ..entrypoint import bootstrap, exec_process
 from ..tailnet import Device, Probe
 from ..tmux import Session
@@ -29,6 +33,10 @@ _CANARY_WINDOW = 4.0
 
 # Wall clock for the whole scan. A peer can answer the coordination server and not answer ssh.
 _SCAN_DEADLINE = 15.0
+
+# Wall clock for the scan behind a Tab key, tailscale status included. Someone is staring at a
+# prompt that does not respond, and a list that is missing a slow device beats a stuck shell.
+_COMPLETION_DEADLINE = 5.0
 
 # How often the waiting loop looks at the probes it is waiting for.
 _POLL = 0.2
@@ -100,14 +108,25 @@ def there(ctx: typer.Context) -> None:
     _attach(pick.device, pick.session.name, current)
 
 
+class Shell(StrEnum):
+    bash = "bash"
+    zsh = "zsh"
+
+
 @app.command("ls")
-def list_all() -> None:
+def list_all(
+    names: Annotated[bool, typer.Option("--names", hidden=True, help="Bare names for the shell completion.")] = False,
+) -> None:
     """List the sessions on every device, numbered and grouped the way the picker shows them.
 
     This is the picker without its prompt, so a number read here is the number the picker
     would take for the same scan. Messages about the scan go to stderr, and no session
     anywhere prints nothing.
     """
+    if names:
+        _list_names()
+        return
+
     tmux.require_installed()
 
     current = tmux.current_session()
@@ -139,6 +158,34 @@ def attach(
     _attach(device, name, tmux.current_session())
 
 
+@app.command("completion")
+def completion(shell: Annotated[Shell, typer.Argument(help="The shell to print the script for.")]) -> None:
+    """Print the completion script for bash or zsh, which completes the name after attach.
+
+    The name matches anywhere in session@device, not only from its start. The script reads the
+    names the last full scan kept, and when they are more than 5 seconds old it runs a scan of
+    its own that gives up after 5 seconds. For zsh, put the output in a directory on fpath as
+    _tmux-there. For bash, put it in ~/.local/share/bash-completion/completions/tmux-there.
+    """
+    script = resources.files("tmux_tools").joinpath("completions", f"tmux-there.{shell.value}")
+    sys.stdout.write(script.read_text(encoding="utf-8"))
+
+
+def _list_names() -> None:
+    """The names ``attach`` takes, one per line and nothing else, for the completion scripts.
+
+    Nobody is reading stderr here: the output is captured by a shell in the middle of a Tab
+    press, and anything printed beside it would land on the command line being typed. So the
+    scan runs silenced, keeps the completion deadline, and waits for no browser login.
+    """
+    deadline = time.monotonic() + _COMPLETION_DEADLINE
+    with silenced():
+        tmux.require_installed()
+        found, _ = _collect(deadline)
+    for pick in flatten(found):
+        sys.stdout.write(f"{pick.label}\n")
+
+
 def flatten(found: list[tuple[Device, list[Session]]]) -> list[Pick]:
     """The sessions of every device in one list, in the order the picker prints them.
 
@@ -148,10 +195,15 @@ def flatten(found: list[tuple[Device, list[Session]]]) -> list[Pick]:
     return [Pick(device, session) for device, sessions in found for session in sessions]
 
 
-def _collect() -> tuple[list[tuple[Device, list[Session]]], bool]:
-    """Scan the devices the config file leaves in, and say whether there was a tailnet to read."""
+def _collect(deadline: float | None = None) -> tuple[list[tuple[Device, list[Session]]], bool]:
+    """Scan the devices the config file leaves in, and say whether there was a tailnet to read.
+
+    Every full scan leaves its names for the shell completion, which is how a Tab pressed
+    right after ``ls`` or the picker costs no scan of its own. A ``deadline`` makes this the
+    scan behind a Tab key, see ``_probe_all``, and it covers ``tailscale status`` too.
+    """
     config = load_config()
-    status = tailnet.status()
+    status = tailnet.status(None if deadline is None else max(deadline - time.monotonic(), 0.0))
     devices = tailnet.online_devices(status)
     for name in tailnet.unmatched_names(devices, config):
         reason = tailnet.why_missing(status, name)
@@ -160,7 +212,9 @@ def _collect() -> tuple[list[tuple[Device, list[Session]]], bool]:
         else:
             warn(f"{name}: {reason}. Its sessions are not listed.")
 
-    return _scan(tailnet.select_devices(devices, config)), bool(status)
+    found = _scan(tailnet.select_devices(devices, config), deadline)
+    save_sessions([pick.label for pick in flatten(found)])
+    return found, bool(status)
 
 
 def _resolve_device(name: str) -> Device:
@@ -237,7 +291,7 @@ def probe_failure(probe: Probe) -> str | None:
     return reason
 
 
-def _scan(devices: list[Device]) -> list[tuple[Device, list[Session]]]:
+def _scan(devices: list[Device], deadline: float | None = None) -> list[tuple[Device, list[Session]]]:
     """Every selected device and the sessions on it, with the devices that have none left out.
 
     This machine is read through the tmux binary, with no ssh in the way. The rest are probed
@@ -251,7 +305,7 @@ def _scan(devices: list[Device]) -> list[tuple[Device, list[Session]]]:
         if device.is_self:
             sessions[device] = tmux.list_sessions()
 
-    for probe in _probe_all([device for device in devices if not device.is_self]):
+    for probe in _probe_all([device for device in devices if not device.is_self], deadline):
         sessions[probe.device] = probe.sessions
         reason = probe_failure(probe)
         if reason is not None:
@@ -260,17 +314,23 @@ def _scan(devices: list[Device]) -> list[tuple[Device, list[Session]]]:
     return [(device, sessions[device]) for device in devices if sessions.get(device)]
 
 
-def _probe_all(devices: list[Device]) -> list[Probe]:
+def _probe_all(devices: list[Device], deadline: float | None = None) -> list[Probe]:
     """Probe the devices: the canary on its own first, then everything else at once.
 
     Nothing here is ever this machine, so this is also the first point that needs an ssh client
     and the only place worth asking for one.
+
+    A ``deadline`` is a scan nobody is watching, the one behind a Tab key. Every probe starts at
+    once in ssh's batch mode, and a probe that asks for a Tailscale SSH check is killed on the
+    spot, because its URL would reach no one. The canary exists to wait for that check, so this
+    scan skips it. Its device is left out, until a scan someone watches gets the check done.
     """
     if not devices:
         return []
 
     tailnet.require_ssh()
-    canary = tailnet.choose_canary(devices)
+    hurried = deadline is not None
+    canary = None if hurried else tailnet.choose_canary(devices)
     pool = ThreadPoolExecutor(max_workers=len(devices))
     running: dict[Probe, Future[None]] = {}
 
@@ -282,10 +342,10 @@ def _probe_all(devices: list[Device]) -> list[Probe]:
 
         for device in devices:
             if device is not canary:
-                probe = Probe(device)
+                probe = Probe(device, batch=hurried)
                 running[probe] = pool.submit(probe.run)
 
-        _wait_for_probes(running, time.monotonic() + _SCAN_DEADLINE)
+        _wait_for_probes(running, deadline or time.monotonic() + _SCAN_DEADLINE, hurried=hurried)
         for future in running.values():
             # A probe that failed for a reason of its own is a bug, not a quiet host
             future.result()
@@ -314,22 +374,30 @@ def _wait_for_canary(probe: Probe, future: Future[None]) -> None:
         _wait_for_probes({probe: future}, None)
 
 
-def _wait_for_probes(running: dict[Probe, Future[None]], deadline: float | None) -> None:
+def _wait_for_probes(running: dict[Probe, Future[None]], deadline: float | None, *, hurried: bool = False) -> None:
     """Wait for the probes, naming the hosts still outstanding while they run.
 
     A probe that has printed an authentication URL is waiting on a human and keeps no deadline.
     The others are killed when the clock runs out, because a peer that answers the coordination
     server is not a peer that answers ssh from wherever you happen to be.
+
+    ``hurried`` is the scan nobody watches: no progress line, and no human to wait for, so a
+    probe that asks for a login is killed as soon as it asks.
     """
     if all(future.done() for future in running.values()):
         # Nothing to wait for and so nothing to say about it
         return
 
-    with _progress() as show:
+    with _progress(shown=not hurried) as show:
         while True:
             pending = [probe for probe, future in running.items() if not future.done()]
             if not pending:
                 return
+
+            if hurried:
+                for probe in pending:
+                    if probe.waiting_for_login:
+                        probe.stop()
 
             if deadline is not None and time.monotonic() >= deadline:
                 for probe in pending:
@@ -342,11 +410,15 @@ def _wait_for_probes(running: dict[Probe, Future[None]], deadline: float | None)
 
 
 @contextmanager
-def _progress() -> Iterator[Callable[[list[Probe]], None]]:
+def _progress(*, shown: bool = True) -> Iterator[Callable[[list[Probe]], None]]:
     """A single line naming the hosts still being read, gone as soon as the scan is done.
 
     It is here to tell a scan that is waiting from a scan that has hung, and for nothing else.
     """
+    if not shown:
+        yield lambda probes: None
+        return
+
     with Live(console=out, transient=True, auto_refresh=False) as live:
 
         def show(probes: list[Probe]) -> None:
