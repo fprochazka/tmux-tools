@@ -207,4 +207,15 @@ tests/                # unit tests for naming, pane matching, device selection, 
 
 A new tool is a new module under `commands/` plus a line in `[project.scripts]`, and why a rule is the way it is lives in the docstrings.
 
+### Commit hooks
+
+tmux-there is developed against a real tailnet, so device names, session names and paths from it end up in terminals, scratch files and test runs, and from there they can slip into a commit. `scripts/hooks` holds a pre-commit and a commit-msg hook that refuse a commit when a staged line or the commit message matches a private identifier. The identifiers live in a file outside the repository, because listing them here would publish the very strings the hooks exist to keep out. Set it up once per clone:
+
+```bash
+git config core.hooksPath scripts/hooks
+git config hooks.forbiddenPatternsFile ~/.config/git/forbidden-patterns.txt  # any path outside the repo
+```
+
+The file holds one extended regex per line, matched case-insensitively; blank lines and `#` comments are ignored. Until `hooks.forbiddenPatternsFile` points at a file with at least one pattern, both hooks refuse every commit and print how to fix it. Tests and docs use placeholder names such as `attic` and `workshop`.
+
 MIT licensed.
