@@ -206,6 +206,7 @@ uv sync --dev
 uv run pytest
 uv run ruff check .
 uv run ruff format .
+uv run mypy
 ```
 
 Run a command from the clone without installing it with `uv run tmux-here`.
