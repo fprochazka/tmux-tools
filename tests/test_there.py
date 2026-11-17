@@ -9,7 +9,7 @@ import socket
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import NoReturn
+from typing import Any, NoReturn
 
 import pytest
 from typer.testing import CliRunner
@@ -47,14 +47,14 @@ def parse_all(lines: list[str]) -> list[Session]:
     return [session for session in map(parse_session, lines) if session is not None]
 
 
-def test_the_listing_survives_the_authentication_noise():
+def test_the_listing_survives_the_authentication_noise() -> None:
     assert parse_all(TRANSCRIPT) == [
         Session("work/releases", "/home/you/devel/releases"),
         Session("personal/notes", "/home/you/notes"),
     ]
 
 
-def test_a_connection_that_only_complains_yields_nothing():
+def test_a_connection_that_only_complains_yields_nothing() -> None:
     complaints = [
         "error connecting to /tmp/tmux-1000/default (No such file or directory)",
         "zsh:1: command not found: tmux",
@@ -64,7 +64,7 @@ def test_a_connection_that_only_complains_yields_nothing():
     assert parse_all(complaints) == []
 
 
-def test_the_numbering_runs_across_devices():
+def test_the_numbering_runs_across_devices() -> None:
     found = [
         (HQ, [Session("personal/notes", "/home/you/notes")]),
         (LAPTOP, [Session("work/releases", "/srv/releases"), Session("work/db", "/srv/db")]),
@@ -72,7 +72,7 @@ def test_the_numbering_runs_across_devices():
     assert [pick.session.name for pick in flatten(found)] == ["personal/notes", "work/releases", "work/db"]
 
 
-def test_a_number_maps_back_to_its_device_and_its_session():
+def test_a_number_maps_back_to_its_device_and_its_session() -> None:
     found = [
         (HQ, [Session("personal/notes", "/home/you/notes")]),
         (LAPTOP, [Session("work/releases", "/srv/releases"), Session("work/db", "/srv/db")]),
@@ -80,11 +80,11 @@ def test_a_number_maps_back_to_its_device_and_its_session():
     assert flatten(found)[2] == Pick(LAPTOP, Session("work/db", "/srv/db"))
 
 
-def test_nothing_anywhere_is_an_empty_list():
+def test_nothing_anywhere_is_an_empty_list() -> None:
     assert flatten([]) == []
 
 
-def test_this_machine_is_read_through_tmux_and_never_handed_to_a_probe(monkeypatch: pytest.MonkeyPatch):
+def test_this_machine_is_read_through_tmux_and_never_handed_to_a_probe(monkeypatch: pytest.MonkeyPatch) -> None:
     local = Session("personal/notes", "/home/you/notes")
     probed: list[Device] = []
 
@@ -99,22 +99,22 @@ def test_this_machine_is_read_through_tmux_and_never_handed_to_a_probe(monkeypat
     assert probed == [LAPTOP]
 
 
-def test_this_machine_on_its_own_needs_no_ssh(monkeypatch: pytest.MonkeyPatch):
+def test_this_machine_on_its_own_needs_no_ssh(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(shutil, "which", lambda name: None)
     assert there._probe_all([]) == []
 
 
-def test_a_label_is_the_session_then_the_device():
+def test_a_label_is_the_session_then_the_device() -> None:
     assert Pick(LAPTOP, Session("acme/shop", "/srv/shop")).label == "acme/shop@acme-laptop"
 
 
-def test_a_target_splits_on_the_last_at_sign():
+def test_a_target_splits_on_the_last_at_sign() -> None:
     assert there.parse_target("acme/shop/new-checkout@attic") == ("acme/shop/new-checkout", "attic")
     assert there.parse_target("you@work@attic") == ("you@work", "attic")
 
 
 @pytest.mark.parametrize("target", ["attic", "@attic", "notes@", ""])
-def test_a_target_without_both_halves_is_refused(target: str):
+def test_a_target_without_both_halves_is_refused(target: str) -> None:
     with pytest.raises(SystemExit):
         there.parse_target(target)
 
@@ -125,16 +125,16 @@ PICKS = [
 ]
 
 
-def test_the_prompt_takes_a_number():
+def test_the_prompt_takes_a_number() -> None:
     assert there.select(PICKS, "2") == PICKS[1]
 
 
-def test_the_prompt_takes_a_name_exactly_as_listed():
+def test_the_prompt_takes_a_name_exactly_as_listed() -> None:
     assert there.select(PICKS, "work/releases@acme-laptop") == PICKS[1]
 
 
 @pytest.mark.parametrize("answer", ["0", "3", "work/releases", "work/releases@laptop", "nope"])
-def test_the_prompt_refuses_anything_not_on_the_list(answer: str):
+def test_the_prompt_refuses_anything_not_on_the_list(answer: str) -> None:
     with pytest.raises(SystemExit):
         there.select(PICKS, answer)
 
@@ -158,7 +158,7 @@ class FakeProbe:
 class World:
     """Everything tmux-there reads and does, held in the test instead of the machine."""
 
-    tailnet: dict
+    tailnet: dict[str, Any]
     config: Config = field(default_factory=Config)
     local: list[Session] = field(default_factory=list)
     probe: FakeProbe = field(default_factory=FakeProbe)
@@ -173,7 +173,7 @@ def world(monkeypatch: pytest.MonkeyPatch) -> World:
     status = json.loads((Path(__file__).parent / "tailscale-status.json").read_text())
     world = World(tailnet=status)
 
-    def read() -> dict:
+    def read() -> dict[str, Any]:
         if world.unavailable:
             raise tailnet.TailnetUnavailable(world.unavailable)
         return world.tailnet
@@ -217,25 +217,25 @@ def refused(target: str, capsys: pytest.CaptureFixture[str]) -> str:
     return capsys.readouterr().err
 
 
-def test_a_remote_session_is_attached_over_ssh_by_its_exact_name(world: World):
+def test_a_remote_session_is_attached_over_ssh_by_its_exact_name(world: World) -> None:
     world.probe = FakeProbe(sessions=[Session("work/db", "/srv/db")])
     attach("work/db@acme-laptop")
     assert world.calls == [("exec", "ssh", "-t", "laptop", "tmux", "attach", "-t", "'=work/db'")]
 
 
-def test_only_the_named_device_is_read(world: World):
+def test_only_the_named_device_is_read(world: World) -> None:
     world.probe = FakeProbe(sessions=[Session("work/db", "/srv/db")])
     attach("work/db@acme-laptop")
     assert [device.name for device in world.probed] == ["acme-laptop"]
 
 
-def test_a_device_is_also_found_by_its_magicdns_name(world: World):
+def test_a_device_is_also_found_by_its_magicdns_name(world: World) -> None:
     world.probe = FakeProbe(sessions=[Session("work/db", "/srv/db")])
     attach("work/db@laptop")
     assert world.calls == [("exec", "ssh", "-t", "laptop", "tmux", "attach", "-t", "'=work/db'")]
 
 
-def test_a_session_name_is_quoted_for_the_remote_shell(world: World):
+def test_a_session_name_is_quoted_for_the_remote_shell(world: World) -> None:
     world.probe = FakeProbe(sessions=[Session("it's notes", "/srv/notes")])
     attach("it's notes@acme-laptop")
     target = world.calls[0][-1]
@@ -243,62 +243,62 @@ def test_a_session_name_is_quoted_for_the_remote_shell(world: World):
     assert shlex.split(target) == ["=it's notes"]
 
 
-def test_a_session_on_this_machine_is_attached_through_tmux(world: World):
+def test_a_session_on_this_machine_is_attached_through_tmux(world: World) -> None:
     world.local = [Session("personal/notes", "/home/you/notes")]
     attach("personal/notes@hq")
     assert world.calls == [("attach", "=personal/notes")]
     assert world.probed == []
 
 
-def test_a_session_on_this_machine_is_switched_to_from_inside_tmux(world: World):
+def test_a_session_on_this_machine_is_switched_to_from_inside_tmux(world: World) -> None:
     world.local = [Session("personal/notes", "/home/you/notes")]
     world.inside_tmux = True
     there.attach("personal/notes@hq")
     assert world.calls == [("switch", "=personal/notes")]
 
 
-def test_a_missing_session_is_reported_and_never_created(world: World, capsys: pytest.CaptureFixture[str]):
+def test_a_missing_session_is_reported_and_never_created(world: World, capsys: pytest.CaptureFixture[str]) -> None:
     world.probe = FakeProbe(sessions=[Session("work/db", "/srv/db")])
     assert "No session 'work' on acme-laptop" in refused("work@acme-laptop", capsys)
     assert world.calls == []
 
 
-def test_a_device_with_no_sessions_says_so(world: World, capsys: pytest.CaptureFixture[str]):
+def test_a_device_with_no_sessions_says_so(world: World, capsys: pytest.CaptureFixture[str]) -> None:
     world.probe = FakeProbe(returncode=1, output=["no server running on /tmp/tmux-1000/default"])
     assert "No tmux session runs on acme-laptop" in refused("work@acme-laptop", capsys)
 
 
-def test_a_failed_ssh_connection_is_not_a_missing_session(world: World, capsys: pytest.CaptureFixture[str]):
+def test_a_failed_ssh_connection_is_not_a_missing_session(world: World, capsys: pytest.CaptureFixture[str]) -> None:
     world.probe = FakeProbe(returncode=255, output=["ssh: connect to host laptop port 22: Connection refused"])
     message = refused("work@acme-laptop", capsys)
     assert "acme-laptop: ssh could not connect to laptop: ssh: connect to host laptop port 22" in message
 
 
-def test_a_connection_killed_at_the_deadline_says_so(world: World, capsys: pytest.CaptureFixture[str]):
+def test_a_connection_killed_at_the_deadline_says_so(world: World, capsys: pytest.CaptureFixture[str]) -> None:
     world.probe = FakeProbe(returncode=-9)
     assert "acme-laptop: ssh did not answer within 15 seconds." in refused("work@acme-laptop", capsys)
 
 
-def test_an_offline_device_is_reported_as_offline(world: World, capsys: pytest.CaptureFixture[str]):
+def test_an_offline_device_is_reported_as_offline(world: World, capsys: pytest.CaptureFixture[str]) -> None:
     assert "attic: Tailscale reports it offline." in refused("notes@attic", capsys)
     assert world.probed == []
 
 
-def test_a_phone_is_reported_as_unreachable(world: World, capsys: pytest.CaptureFixture[str]):
+def test_a_phone_is_reported_as_unreachable(world: World, capsys: pytest.CaptureFixture[str]) -> None:
     assert "Pixel 9a: it is a phone or a tablet" in refused("notes@Pixel 9a", capsys)
 
 
-def test_an_unknown_device_lists_the_online_ones(world: World, capsys: pytest.CaptureFixture[str]):
+def test_an_unknown_device_lists_the_online_ones(world: World, capsys: pytest.CaptureFixture[str]) -> None:
     assert "No device 'typo' on the tailnet. Online: hq, acme-laptop" in refused("notes@typo", capsys)
 
 
-def test_a_device_the_config_leaves_out_cannot_be_attached(world: World, capsys: pytest.CaptureFixture[str]):
+def test_a_device_the_config_leaves_out_cannot_be_attached(world: World, capsys: pytest.CaptureFixture[str]) -> None:
     world.config = Config(skip=("acme-laptop",))
     assert "Device 'acme-laptop' is left out by devices.only or devices.skip" in refused("work@laptop", capsys)
     assert world.probed == []
 
 
-def test_a_tailnet_that_cannot_be_read_is_reported(world: World, capsys: pytest.CaptureFixture[str]):
+def test_a_tailnet_that_cannot_be_read_is_reported(world: World, capsys: pytest.CaptureFixture[str]) -> None:
     world.unavailable = "Check that tailscaled runs and is logged in."
     message = refused("work/db@acme-laptop", capsys)
     assert "Cannot read the tailnet to find 'acme-laptop'. Check that tailscaled runs" in message
@@ -306,7 +306,7 @@ def test_a_tailnet_that_cannot_be_read_is_reported(world: World, capsys: pytest.
 
 def test_a_tailnet_that_cannot_be_read_still_leaves_this_machine(
     world: World, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-):
+) -> None:
     monkeypatch.setattr(socket, "gethostname", lambda: "workbench")
     world.unavailable = "Check that tailscaled runs and is logged in."
     world.local = [Session("personal/notes", "/home/you/notes")]
@@ -334,7 +334,7 @@ acme-laptop
 """
 
 
-def test_ls_prints_the_numbered_listing_grouped_by_device(world: World, monkeypatch: pytest.MonkeyPatch):
+def test_ls_prints_the_numbered_listing_grouped_by_device(world: World, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(tailnet, "status", lambda timeout=None: world.tailnet)
     monkeypatch.setattr(there, "_scan", lambda devices, deadline=None: TWO_DEVICES)
     monkeypatch.setattr(tmux, "current_session", lambda: "personal/notes")
@@ -343,7 +343,7 @@ def test_ls_prints_the_numbered_listing_grouped_by_device(world: World, monkeypa
     assert result.stdout == LISTING
 
 
-def test_the_picker_is_the_ls_listing_and_a_prompt(world: World, monkeypatch: pytest.MonkeyPatch):
+def test_the_picker_is_the_ls_listing_and_a_prompt(world: World, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(tailnet, "status", lambda timeout=None: world.tailnet)
     monkeypatch.setattr(there, "_scan", lambda devices, deadline=None: TWO_DEVICES)
     monkeypatch.setattr(tmux, "current_session", lambda: "personal/notes")
@@ -354,7 +354,7 @@ def test_the_picker_is_the_ls_listing_and_a_prompt(world: World, monkeypatch: py
     assert world.calls == [("exec", "ssh", "-t", "laptop", "tmux", "attach", "-t", "'=work/db'")]
 
 
-def test_ls_with_nothing_anywhere_prints_nothing(world: World, monkeypatch: pytest.MonkeyPatch):
+def test_ls_with_nothing_anywhere_prints_nothing(world: World, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(tailnet, "status", lambda timeout=None: world.tailnet)
     monkeypatch.setattr(there, "_scan", lambda devices, deadline=None: [])
     result = CliRunner().invoke(there.app, ["ls"])
@@ -362,7 +362,7 @@ def test_ls_with_nothing_anywhere_prints_nothing(world: World, monkeypatch: pyte
     assert result.stdout == ""
 
 
-def test_no_command_is_the_picker(world: World, monkeypatch: pytest.MonkeyPatch):
+def test_no_command_is_the_picker(world: World, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(tailnet, "status", lambda timeout=None: world.tailnet)
     monkeypatch.setattr(there, "_scan", lambda devices, deadline=None: [(LAPTOP, [Session("work/db", "/srv/db")])])
     monkeypatch.setattr(there, "ask", lambda question: "work/db@acme-laptop")
@@ -378,7 +378,7 @@ def scan_warnings(probe: FakeProbe, world: World, capsys: pytest.CaptureFixture[
     return capsys.readouterr().err.splitlines()
 
 
-def test_the_scan_names_a_device_ssh_could_not_connect_to(world: World, capsys: pytest.CaptureFixture[str]):
+def test_the_scan_names_a_device_ssh_could_not_connect_to(world: World, capsys: pytest.CaptureFixture[str]) -> None:
     probe = FakeProbe(returncode=255, output=["ssh: connect to host laptop port 22: Connection refused"])
     assert scan_warnings(probe, world, capsys) == [
         "acme-laptop: ssh could not connect to laptop: ssh: connect to host laptop port 22: Connection refused."
@@ -388,7 +388,7 @@ def test_the_scan_names_a_device_ssh_could_not_connect_to(world: World, capsys: 
 
 def test_the_scan_names_a_device_that_failed_after_a_tailscale_ssh_check(
     world: World, capsys: pytest.CaptureFixture[str]
-):
+) -> None:
     url = "https://login.tailscale.com/a/1f2e3d4c5b6a"
     probe = FakeProbe(returncode=255, login_url=url, output=["Connection closed by laptop"])
     assert scan_warnings(probe, world, capsys) == [
@@ -397,7 +397,7 @@ def test_the_scan_names_a_device_that_failed_after_a_tailscale_ssh_check(
     ]
 
 
-def test_the_scan_names_a_device_that_did_not_answer_in_time(world: World, capsys: pytest.CaptureFixture[str]):
+def test_the_scan_names_a_device_that_did_not_answer_in_time(world: World, capsys: pytest.CaptureFixture[str]) -> None:
     assert scan_warnings(FakeProbe(returncode=-9), world, capsys) == [
         "acme-laptop: ssh did not answer within 15 seconds. Its sessions are not listed."
     ]
@@ -405,14 +405,14 @@ def test_the_scan_names_a_device_that_did_not_answer_in_time(world: World, capsy
 
 def test_the_scan_says_nothing_about_a_device_that_answered_without_sessions(
     world: World, capsys: pytest.CaptureFixture[str]
-):
+) -> None:
     probe = FakeProbe(returncode=1, output=["no server running on /tmp/tmux-1000/default"])
     assert scan_warnings(probe, world, capsys) == []
 
 
 def test_the_config_names_get_the_reason_they_are_not_listed(
     world: World, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-):
+) -> None:
     monkeypatch.setattr(tailnet, "status", lambda timeout=None: world.tailnet)
     monkeypatch.setattr(there, "_scan", lambda devices, deadline=None: [])
     world.config = Config(only=("attic", "Pixel 9a", "laptop", "typo", "workshop"))
@@ -430,14 +430,14 @@ def kept() -> str:
     return cache.sessions_path().read_text()
 
 
-def test_ls_keeps_the_names_it_listed_for_the_completion(world: World, monkeypatch: pytest.MonkeyPatch):
+def test_ls_keeps_the_names_it_listed_for_the_completion(world: World, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(tailnet, "status", lambda timeout=None: world.tailnet)
     monkeypatch.setattr(there, "_scan", lambda devices, deadline=None: TWO_DEVICES)
     CliRunner().invoke(there.app, ["ls"])
     assert kept() == "personal/notes@hq\nwork/releases@acme-laptop\nwork/db@acme-laptop\n"
 
 
-def test_nothing_anywhere_is_kept_as_an_empty_list(world: World, monkeypatch: pytest.MonkeyPatch):
+def test_nothing_anywhere_is_kept_as_an_empty_list(world: World, monkeypatch: pytest.MonkeyPatch) -> None:
     cache.save_sessions(["work/db@acme-laptop"])
     monkeypatch.setattr(tailnet, "status", lambda timeout=None: world.tailnet)
     monkeypatch.setattr(there, "_scan", lambda devices, deadline=None: [])
@@ -445,13 +445,13 @@ def test_nothing_anywhere_is_kept_as_an_empty_list(world: World, monkeypatch: py
     assert kept() == ""
 
 
-def test_attach_reads_one_device_and_keeps_no_names(world: World):
+def test_attach_reads_one_device_and_keeps_no_names(world: World) -> None:
     world.probe = FakeProbe(sessions=[Session("work/db", "/srv/db")])
     attach("work/db@acme-laptop")
     assert not cache.sessions_path().exists()
 
 
-def test_the_kept_names_are_replaced_and_never_rewritten_in_place(cache_home: Path):
+def test_the_kept_names_are_replaced_and_never_rewritten_in_place(cache_home: Path) -> None:
     cache.save_sessions(["old@hq"])
     with cache.sessions_path().open() as reader:
         cache.save_sessions(["new@hq", "my notes@hq"])
@@ -461,12 +461,12 @@ def test_the_kept_names_are_replaced_and_never_rewritten_in_place(cache_home: Pa
     assert [path.name for path in cache.sessions_path().parent.iterdir()] == ["there-sessions"]
 
 
-def test_a_cache_that_cannot_be_written_is_no_reason_to_fail(cache_home: Path):
+def test_a_cache_that_cannot_be_written_is_no_reason_to_fail(cache_home: Path) -> None:
     cache_home.write_text("a file where the directory should be")
     cache.save_sessions(["work/db@acme-laptop"])
 
 
-def test_ls_names_prints_bare_names_and_nothing_on_stderr(world: World, monkeypatch: pytest.MonkeyPatch):
+def test_ls_names_prints_bare_names_and_nothing_on_stderr(world: World, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(tailnet, "status", lambda timeout=None: world.tailnet)
     monkeypatch.setattr(there, "_scan", lambda devices, deadline=None: TWO_DEVICES)
     monkeypatch.setattr(tmux, "current_session", lambda: "personal/notes")
@@ -481,14 +481,14 @@ def test_ls_names_prints_bare_names_and_nothing_on_stderr(world: World, monkeypa
 
 def test_ls_names_keeps_the_completion_deadline_for_tailscale_and_the_probes(
     world: World, monkeypatch: pytest.MonkeyPatch
-):
+) -> None:
     seen: dict[str, float | None] = {}
 
-    def status(timeout: float | None = None) -> dict:
+    def status(timeout: float | None = None) -> dict[str, Any]:
         seen["timeout"] = timeout
         return world.tailnet
 
-    def scan(devices: list[Device], deadline: float | None = None) -> list:
+    def scan(devices: list[Device], deadline: float | None = None) -> list[tuple[Device, list[Session]]]:
         seen["deadline"] = deadline
         return []
 
@@ -497,14 +497,24 @@ def test_ls_names_keeps_the_completion_deadline_for_tailscale_and_the_probes(
     started = time.monotonic()
     CliRunner().invoke(there.app, ["ls", "--names"])
     ended = time.monotonic()
-    assert 0 < seen["timeout"] <= 5
-    assert started + 5 <= seen["deadline"] <= ended + 5
+    timeout, deadline = seen["timeout"], seen["deadline"]
+    assert timeout is not None and 0 < timeout <= 5
+    assert deadline is not None and started + 5 <= deadline <= ended + 5
 
 
-def test_ls_without_names_waits_as_long_as_it_takes(world: World, monkeypatch: pytest.MonkeyPatch):
+def test_ls_without_names_waits_as_long_as_it_takes(world: World, monkeypatch: pytest.MonkeyPatch) -> None:
     seen: list[float | None] = []
-    monkeypatch.setattr(tailnet, "status", lambda timeout=None: seen.append(timeout) or world.tailnet)
-    monkeypatch.setattr(there, "_scan", lambda devices, deadline=None: seen.append(deadline) or [])
+
+    def status(timeout: float | None = None) -> dict[str, Any]:
+        seen.append(timeout)
+        return world.tailnet
+
+    def scan(devices: list[Device], deadline: float | None = None) -> list[tuple[Device, list[Session]]]:
+        seen.append(deadline)
+        return []
+
+    monkeypatch.setattr(tailnet, "status", status)
+    monkeypatch.setattr(there, "_scan", scan)
     CliRunner().invoke(there.app, ["ls"])
     assert seen == [None, None]
 
@@ -528,7 +538,7 @@ ANSWER = "printf 'work/db\\t/srv/db\\n'"
 
 def test_a_hurried_scan_leaves_out_a_device_that_asks_for_a_login(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-):
+) -> None:
     cache_box = Device(name="cache", host="cache", tagged=False, is_self=False)
     batch_modes = scripted_probes(monkeypatch, {"laptop": LOGIN, "cache": ANSWER})
     started = time.monotonic()
@@ -543,7 +553,7 @@ def test_a_hurried_scan_leaves_out_a_device_that_asks_for_a_login(
     assert capsys.readouterr().err == ""
 
 
-def test_a_hurried_scan_stops_at_its_deadline(monkeypatch: pytest.MonkeyPatch):
+def test_a_hurried_scan_stops_at_its_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
     scripted_probes(monkeypatch, {"laptop": "exec sleep 30"})
     started = time.monotonic()
     (probe,) = there._probe_all([LAPTOP], started + 0.5)
@@ -551,7 +561,7 @@ def test_a_hurried_scan_stops_at_its_deadline(monkeypatch: pytest.MonkeyPatch):
     assert probe.unreachable
 
 
-def test_a_watched_scan_asks_ssh_to_be_able_to_ask(monkeypatch: pytest.MonkeyPatch):
+def test_a_watched_scan_asks_ssh_to_be_able_to_ask(monkeypatch: pytest.MonkeyPatch) -> None:
     batch_modes = scripted_probes(monkeypatch, {"laptop": ANSWER})
     (probe,) = there._probe_all([LAPTOP])
     assert batch_modes == ["laptop:False"]
@@ -559,7 +569,7 @@ def test_a_watched_scan_asks_ssh_to_be_able_to_ask(monkeypatch: pytest.MonkeyPat
 
 
 @pytest.mark.parametrize("shell", ["bash", "zsh"])
-def test_the_completion_scripts_read_the_file_ls_writes(shell: str, cache_home: Path):
+def test_the_completion_scripts_read_the_file_ls_writes(shell: str, cache_home: Path) -> None:
     result = CliRunner().invoke(there.app, ["completion", shell])
     assert result.exit_code == 0
     relative = cache.sessions_path().relative_to(cache_home)

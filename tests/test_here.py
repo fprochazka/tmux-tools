@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import pytest
@@ -33,7 +34,7 @@ def fake_tmux(monkeypatch: pytest.MonkeyPatch) -> FakeTmux:
 
 
 @pytest.fixture
-def answers(monkeypatch: pytest.MonkeyPatch):
+def answers(monkeypatch: pytest.MonkeyPatch) -> Callable[..., None]:
     def given(*typed: str) -> None:
         remaining = list(typed)
 
@@ -47,59 +48,59 @@ def answers(monkeypatch: pytest.MonkeyPatch):
     return given
 
 
-def test_a_number_attaches_to_that_session(fake_tmux: FakeTmux, answers):
+def test_a_number_attaches_to_that_session(fake_tmux: FakeTmux, answers: Callable[..., None]) -> None:
     answers("2")
     here._pick_session(MATCHES, "/repo", "")
     assert fake_tmux.calls == [("switch", "beta")]
 
 
-def test_a_name_starts_a_new_session_in_the_directory(fake_tmux: FakeTmux, answers):
+def test_a_name_starts_a_new_session_in_the_directory(fake_tmux: FakeTmux, answers: Callable[..., None]) -> None:
     answers("gamma")
     here._pick_session(MATCHES, "/repo", "")
     assert fake_tmux.calls == [("new", "gamma", "/repo"), ("switch", "gamma")]
 
 
-def test_a_number_out_of_range_is_not_a_name(fake_tmux: FakeTmux, answers):
+def test_a_number_out_of_range_is_not_a_name(fake_tmux: FakeTmux, answers: Callable[..., None]) -> None:
     # Creating a session called "9" would be a worse answer to a typo than asking again
     answers("9", "1")
     here._pick_session(MATCHES, "/repo", "")
     assert fake_tmux.calls == [("switch", "alpha")]
 
 
-def test_zero_is_not_a_name_either(fake_tmux: FakeTmux, answers):
+def test_zero_is_not_a_name_either(fake_tmux: FakeTmux, answers: Callable[..., None]) -> None:
     answers("0", "1")
     here._pick_session(MATCHES, "/repo", "")
     assert fake_tmux.calls == [("switch", "alpha")]
 
 
-def test_an_empty_answer_asks_again(fake_tmux: FakeTmux, answers):
+def test_an_empty_answer_asks_again(fake_tmux: FakeTmux, answers: Callable[..., None]) -> None:
     answers("", "1")
     here._pick_session(MATCHES, "/repo", "")
     assert fake_tmux.calls == [("switch", "alpha")]
 
 
-def test_a_name_another_session_holds_is_refused(fake_tmux: FakeTmux, answers):
+def test_a_name_another_session_holds_is_refused(fake_tmux: FakeTmux, answers: Callable[..., None]) -> None:
     fake_tmux.taken.add("taken")
     answers("taken", "fresh")
     here._pick_session(MATCHES, "/repo", "")
     assert fake_tmux.calls == [("new", "fresh", "/repo"), ("switch", "fresh")]
 
 
-def test_picking_the_session_you_are_in_does_nothing(fake_tmux: FakeTmux, answers):
+def test_picking_the_session_you_are_in_does_nothing(fake_tmux: FakeTmux, answers: Callable[..., None]) -> None:
     answers("1")
     here._pick_session(MATCHES, "/repo", "alpha")
     assert fake_tmux.calls == []
 
 
-def test_a_name_that_only_looks_like_a_number_is_a_name(fake_tmux: FakeTmux, answers):
+def test_a_name_that_only_looks_like_a_number_is_a_name(fake_tmux: FakeTmux, answers: Callable[..., None]) -> None:
     answers("1a")
     here._pick_session(MATCHES, "/repo", "")
     assert fake_tmux.calls == [("new", "1a", "/repo"), ("switch", "1a")]
 
 
 def test_the_other_prompt_refuses_a_taken_name_the_same_way(
-    fake_tmux: FakeTmux, answers, monkeypatch: pytest.MonkeyPatch
-):
+    fake_tmux: FakeTmux, answers: Callable[..., None], monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr(here, "propose_names", lambda root: ["acme/shop"])
     fake_tmux.taken.add("acme/shop")
     answers("1", "acme/shop", "acme/shop-2")

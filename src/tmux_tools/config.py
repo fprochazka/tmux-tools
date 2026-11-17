@@ -6,6 +6,7 @@ import os
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from .console import die
 
@@ -55,7 +56,7 @@ def load_config(path: Path | None = None) -> Config:
     return Config(only=_names(path, devices, "only"), skip=_names(path, devices, "skip"))
 
 
-def _names(path: Path, devices: dict, key: str) -> tuple[str, ...]:
+def _names(path: Path, devices: dict[str, Any], key: str) -> tuple[str, ...]:
     """One list of device names from the ``[devices]`` table, empty when it is not there."""
     value = devices.get(key, [])
     if not isinstance(value, list) or any(not isinstance(name, str) for name in value):

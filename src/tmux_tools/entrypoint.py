@@ -6,11 +6,12 @@ is produced, and a Ctrl+C that ends the process the way the prompts promise it w
 
 from __future__ import annotations
 
+import io
 import os
 import signal
 import sys
 from types import FrameType
-from typing import NoReturn
+from typing import NoReturn, cast
 
 
 def bootstrap() -> None:
@@ -30,8 +31,8 @@ def _configure_unbuffered_output() -> None:
     holds bytes until something flushes it, and ``line_buffering`` is what forces that flush
     on each newline. A prompt that ends without a newline still needs its own flush.
     """
-    sys.stdout.reconfigure(line_buffering=True, write_through=True)
-    sys.stderr.reconfigure(line_buffering=True, write_through=True)
+    cast(io.TextIOWrapper, sys.stdout).reconfigure(line_buffering=True, write_through=True)
+    cast(io.TextIOWrapper, sys.stderr).reconfigure(line_buffering=True, write_through=True)
 
 
 def _exit_quietly_on_interrupt() -> None:

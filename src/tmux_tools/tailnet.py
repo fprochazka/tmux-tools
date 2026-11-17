@@ -92,7 +92,7 @@ def read(timeout: float | None = None) -> dict[str, Any]:
         raise TailnetUnavailable("Check that tailscaled runs and is logged in.")
 
     try:
-        parsed = json.loads(result.stdout)
+        parsed: dict[str, Any] = json.loads(result.stdout)
     except ValueError:
         raise TailnetUnavailable("tailscale status did not answer with JSON.") from None
 
@@ -177,7 +177,7 @@ def peer_named(tailnet: dict[str, Any], name: str) -> dict[str, Any] | None:
 
     For explaining why a name is missing from ``online_devices``, and for nothing else.
     """
-    records = [tailnet.get("Self") or {}, *(tailnet.get("Peer") or {}).values()]
+    records: list[dict[str, Any]] = [tailnet.get("Self") or {}, *(tailnet.get("Peer") or {}).values()]
     for record in records:
         if record and name in (str(record.get("HostName") or ""), _ssh_host(record)):
             return record
@@ -259,6 +259,7 @@ class Probe:
 
     def run(self) -> None:
         """Read the connection to its end. Runs in a worker thread; results land on the probe."""
+        assert self._process.stdout is not None  # opened with stdout=PIPE
         for raw in self._process.stdout:
             self._consume(raw.rstrip("\n"))
         self.returncode = self._process.wait()
