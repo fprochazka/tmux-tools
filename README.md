@@ -145,7 +145,7 @@ only = ["workshop", "attic"]
 
 ## Installation
 
-You need Python 3.11+ and [uv](https://docs.astral.sh/uv/).
+You need Python 3.12+ and [uv](https://docs.astral.sh/uv/).
 
 There is no PyPI release, so install from a clone as an editable uv tool. The commands land on your PATH, and edits in the clone take effect with no reinstall.
 
